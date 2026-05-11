@@ -70,8 +70,6 @@ print(result_df[['source_id', 'is_contaminated', 'note_image']].head())
 
 ```
 
----
-
 ## Spectrum Querying and Extraction
 
 A tutorial is available in `tutorial_SPXQuery.ipynb`. This pipeline utilizes a custom wrapper around the [spxquery](https://github.com/WenkeRen/spxquery) package for fast bulk data retrieval.
@@ -95,7 +93,7 @@ The extraction is handled by `spxquery_get_spectrum_calibrated`.
 * `calibrate`:
     * If `True`: Applies the PSF correction. The output file retains the original `flux` and `flux_error` columns, and appends `flux_calib`, `flux_error_calib`, and the specific `correction_factor` applied to each row.
     * If `False`: Bypasses the calibration and simply moves the raw `spxquery` output file untouched.
-    
+
 * `outdir`: The destination directory for the final `[source_id].csv` files.
 * Original headers (denoted by `#`) from the `spxquery` output are preserved in both modes.
 
