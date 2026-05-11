@@ -15,20 +15,19 @@ pip install -r requirements.txt
 
 ## Source Decontamination
 
-Due to the large pixel scale of SPHEREx, isolated targets can easily be contaminated by unresolved background sources. The contamination pipeline cross-references targets against high-resolution optical catalogs and direct FITS images to flag or remove blended sources. A full walkthrough is available in `tutorial_contamination.ipynb`.
+Due to the large pixel scale of SPHEREx, isolated targets can easily be contaminated by unresolved background sources. The contamination pipeline cross-references targets against high-resolution optical catalogs and direct FITS images to flag or remove blended sources. A tutorial is available in `tutorial_contamination.ipynb`.
 
 ### 1. Catalog-Level Filtering
 
 The pipeline queries four successive survey catalogs to identify neighboring sources within a defined search radius:
 
-* **Gaia DR3:** Synchronous ADQL spatial queries to identify basic positional blends.
-* **DESI Legacy DR10 (Tractor):** Anchors the search to the central target and evaluates nearest neighbors. Filters noise artifacts using Signal-to-Noise Ratio (SNR) limits and identifies extended background sources.
-* **Pan-STARRS DR1:** Separates stars from extended galaxies using the mathematical difference between PSF and Kron magnitudes in the r-band.
-* **SDSS DR16:** Applies exact spatial logic and SNR limits using SDSS morphological classifications.
-
+*   **Gaia DR3:** Executes synchronous ADQL queries to identify basic positional blends within the search radius.
+*   **DESI Legacy DR10 (Tractor):** Anchors to the central target to evaluate nearest neighbors. Filters noise using Signal-to-Noise Ratio (SNR) limits and identifies extended background sources using Tractor morphological classifications and r-band flux.
+*   **Pan-STARRS DR1:** Anchors to the central target to evaluate nearest neighbors. Filters noise using Signal-to-Noise Ratio (SNR) limits and identifies extended background sources using the difference between PSF and Kron magnitudes in the r-band.
+*   **SDSS DR16:** Anchors to the central target to evaluate nearest neighbors. Filters noise using Signal-to-Noise Ratio (SNR) limits and identifies extended background sources using SDSS morphological classifications in the r-band.
 ### 2. Image-Level Filtering
 
-For sources that pass catalog checks, the pipeline performs direct image analysis using a headless World Coordinate System (WCS) PSF fitter:
+For sources that pass catalog checks, the pipeline performs direct image analysis using a World Coordinate System (WCS) PSF fitter:
 
 * **Fallback Hierarchy:** Sequentially attempts to download optical FITS cutouts from the highest available resolution survey: DESI Legacy $\rightarrow$ PanSTARRS $\rightarrow$ SDSS $\rightarrow$ DSS2.
 * **Source Fitting:** Uses `photutils.DAOStarFinder` to detect observed sources in the cutout.
@@ -43,8 +42,8 @@ The pipeline is executed via the `spherex_contamination_analysis` wrapper functi
 * `df`: The input pandas DataFrame. Must contain `source_id`, `ra`, and `dec` columns.
 * `search_radius_arcsec`: The radial distance to check for blending (default: 9.3").
 * `remove_contaminated`:
-* If `True`: Drops contaminated rows from the dataframe at each step, returning only purely isolated sources.
-* If `False`: Retains all rows. Appends boolean flag columns (e.g., `is_contaminated_gaia`) and diagnostic notes for each survey, culminating in a master `is_contaminated` flag.
+    * If `True`: Drops contaminated rows from the dataframe at each step, returning only purely isolated sources.
+    * If `False`: Retains all rows. Appends boolean flag columns (e.g., `is_contaminated_gaia`) and diagnostic notes for each survey, culminating in a master `is_contaminated` flag.
 
 
 * `verbose`: Enables step-by-step console logging.
