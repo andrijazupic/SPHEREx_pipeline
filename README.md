@@ -1,6 +1,6 @@
 # SPHEREx Pipeline
 
-Data pipeline for decontaminating SPHEREx sources and retrieving spectra using the SPXQuery and SPIFF packages.
+A data pipeline designed to flag blended SPHEREx sources using high-resolution optical catalogs, and retrieve fast, bulk spectra via SPXQuery with empirical calibrations to match SPIFF PSF-photometry.
 
 ## Installation
 
