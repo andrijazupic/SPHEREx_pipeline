@@ -69,3 +69,52 @@ result_df = spherex_contamination_analysis(
 print(result_df[['source_id', 'is_contaminated', 'note_image']].head())
 
 ```
+
+---
+
+## Spectrum Querying and Extraction
+
+A tutorial is available in `tutorial_SPXQuery.ipynb`. This pipeline utilizes a custom wrapper around the [spxquery](https://github.com/WenkeRen/spxquery) package for fast bulk data retrieval.
+
+### The Aperture vs. PSF Discrepancy
+
+While `spxquery` is highly efficient for bulk queries, it relies on fixed 3-pixel (9.3") aperture photometry. This misses faint light in the source wings, resulting in lower total flux compared to [SPIFF](https://github.com/jgagneastro/SPIFF), an extraction tool that uses highly accurate PSF fitting and proper motion tracking. However, SPIFF is computationally expensive, often requiring over two hours to extract a single source.
+
+### The Calibrated Wrapper
+
+To combine the speed of `spxquery` with the accuracy of SPIFF, the wrapper applies an empirical calibration. It calculates a magnitude-dependent correction factor across 10 wavelength bins, utilizing smooth interpolation to prevent discontinuities at bin edges. This effectively scales the fast aperture extraction to match SPIFF's PSF photometry.
+
+The wrapper manages all data handling locally: it downloads the necessary 20x20 pixel cutouts, performs the spectrophotometry, and then automatically deletes all temporary directories to preserve disk space, leaving only the final parsed `.csv` file.
+
+### Usage
+
+The extraction is handled by `spxquery_get_spectrum_calibrated`.
+
+**Key Parameters:**
+
+* `calibrate`:
+    * If `True`: Applies the PSF correction. The output file retains the original `flux` and `flux_error` columns, and appends `flux_calib`, `flux_error_calib`, and the specific `correction_factor` applied to each row.
+    * If `False`: Bypasses the calibration and simply moves the raw `spxquery` output file untouched.
+    
+* `outdir`: The destination directory for the final `[source_id].csv` files.
+* Original headers (denoted by `#`) from the `spxquery` output are preserved in both modes.
+
+**Example Implementation:**
+
+```python
+from spxquery_wrapper import spxquery_get_spectrum_calibrated
+
+# Extract and calibrate a single source from a dataframe row
+source_df = spxquery_get_spectrum_calibrated(
+    source_id=row['source_id'],
+    ra=row['ra'], 
+    dec=row['dec'], 
+    calibrate=True, 
+    outdir="spxquery_results_calib",
+    verbose=True
+)
+
+# Inspect the calibrated columns
+print(source_df[['wavelength', 'flux', 'flux_calib', 'correction_factor']].head())
+
+```
