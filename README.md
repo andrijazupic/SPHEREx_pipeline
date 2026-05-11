@@ -4,14 +4,15 @@ A data pipeline designed to flag blended SPHEREx sources using high-resolution o
 
 ## Installation
 
+
 Clone the repository to your local machine and install the required dependencies:
 
 ```bash
-git clone https://github.com/andrijazupic/SPHEREx_pipeline.git
+git clone [https://github.com/andrijazupic/SPHEREx_pipeline.git](https://github.com/andrijazupic/SPHEREx_pipeline.git)
 cd SPHEREx_pipeline
-pip install -r requirements.txt
 
-```
+# Recommended: Create and activate a virtual environment (venv/conda) here
+pip install -r requirements.txt
 
 ## Source Decontamination
 
