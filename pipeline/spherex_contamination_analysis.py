@@ -1,5 +1,5 @@
-from catalog_contamination import *
-from image_contamination import *
+from .catalog_contamination import *
+from .image_contamination import *
 
 def spherex_contamination_analysis(df, search_radius_arcsec=9.3, remove_contaminated=True, verbose=False):
     """
