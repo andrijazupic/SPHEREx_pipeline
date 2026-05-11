@@ -70,6 +70,18 @@ print(result_df[['source_id', 'is_contaminated', 'note_image']].head())
 
 ```
 
+### Visual Diagnostics
+The pipeline includes a `plot_survey_comparison` function to visually verify the automated flagging. It fetches the two highest-resolution available optical cutouts, calculates dynamic PSF wings based on the survey's parameters, and overlays the 9.3" SPHEREx exclusion zone.
+
+**Example: Contaminated Source**
+*(DSS2 and Pan-STARRS cutouts showing unresolved background sources within the exclusion zone)*
+![Contaminated Source Example](images/contaminated.png)
+
+**Example: Clean Source**
+*(DESI Legacy and Pan-STARRS cutouts confirming an isolated target)*
+![Uncontaminated Source Example](images/uncontaminated.png)
+
+
 ## Spectrum Querying and Extraction
 
 A tutorial is available in `tutorial_SPXQuery.ipynb`. This pipeline utilizes a custom wrapper around the [spxquery](https://github.com/WenkeRen/spxquery) package for fast bulk data retrieval.
@@ -77,6 +89,14 @@ A tutorial is available in `tutorial_SPXQuery.ipynb`. This pipeline utilizes a c
 ### The Aperture vs. PSF Discrepancy
 
 While `spxquery` is highly efficient for bulk queries, it relies on fixed 3-pixel (9.3") aperture photometry. This misses faint light in the source wings, resulting in lower total flux compared to [SPIFF](https://github.com/jgagneastro/SPIFF), an extraction tool that uses highly accurate PSF fitting and proper motion tracking. However, SPIFF is computationally expensive, often requiring over two hours to extract a single source.
+
+**The Discrepancy:** 
+Raw `spxquery` aperture extraction (red) systemically underestimates flux compared to SPIFF's PSF fitting (blue) due to lost light in the source wings.
+![Raw SPIFF vs SPXQuery](images/SPIFF_vs_SPXQuery.png)
+
+**The Correction:** 
+Applying the empirical calibration wrapper scales the `spxquery` output to match SPIFF photometry, bridging the gap between processing speed and extraction accuracy.
+![Calibrated SPIFF vs SPXQuery](images/SPIFF_vs_SPXQuery_calib.png)
 
 ### The Calibrated Wrapper
 
