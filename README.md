@@ -73,8 +73,23 @@ print(result_df[['source_id', 'is_contaminated', 'note_image']].head())
 ### Visual Diagnostics
 The pipeline includes a `plot_survey_comparison` function to visually verify the automated flagging. It fetches the two highest-resolution available optical cutouts, calculates dynamic PSF wings based on the survey's parameters, and overlays the 9.3" SPHEREx exclusion zone.
 
+
+**Example Implementation:**
+
+```python
+from image_contamination import plot_survey_comparison
+
+# Visualize the two highest-resolution available optical cutouts for a single source
+plot_survey_comparison(source_id=3108936854882971904, 
+                       ra=105.29821, 
+                       dec=-2.431236, 
+                       search_radius_arcsec=9.3
+)
+
+```
+
 **Example: Contaminated Source**
-*(DSS2 and Pan-STARRS cutouts showing unresolved background sources within the exclusion zone)*
+*(DSS2 and Pan-STARRS cutouts showing background sources within the exclusion zone)*
 ![Contaminated Source Example](images/contaminated.png)
 
 **Example: Clean Source**
@@ -91,7 +106,7 @@ A tutorial is available in `tutorial_SPXQuery.ipynb`. This pipeline utilizes a c
 While `spxquery` is highly efficient for bulk queries, it relies on fixed 3-pixel (9.3") aperture photometry. This misses faint light in the source wings, resulting in lower total flux compared to [SPIFF](https://github.com/jgagneastro/SPIFF), an extraction tool that uses highly accurate PSF fitting and proper motion tracking. However, SPIFF is computationally expensive, often requiring over two hours to extract a single source.
 
 **The Discrepancy:** 
-Raw `spxquery` aperture extraction (red) systemically underestimates flux compared to SPIFF's PSF fitting (blue) due to lost light in the source wings.
+Raw `spxquery` aperture extraction (blue) systemically underestimates flux compared to SPIFF's PSF fitting (red) due to lost light in the source wings.
 ![Raw SPIFF vs SPXQuery](images/SPIFF_vs_SPXQuery.png)
 
 **The Correction:** 
@@ -123,10 +138,10 @@ The extraction is handled by `spxquery_get_spectrum_calibrated`.
 from spxquery_wrapper import spxquery_get_spectrum_calibrated
 
 # Extract and calibrate a single source from a dataframe row
-source_df = spxquery_get_spectrum_calibrated(
-    source_id=row['source_id'],
-    ra=row['ra'], 
-    dec=row['dec'], 
+spectrum_df = spxquery_get_spectrum_calibrated(
+    source_id=3108936854882971904,
+    ra=105.29821,
+    dec=-2.431236,
     calibrate=True, 
     outdir="spxquery_results_calib",
     verbose=True
