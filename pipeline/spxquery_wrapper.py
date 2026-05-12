@@ -10,16 +10,16 @@ from spxquery.core.pipeline import run_pipeline
 # 1. Your Saved Calibration Data
 # ==========================================
 SAVED_CALIBRATION = {
-    1: {'slope': -0.012869, 'intercept': 1.395960},
-    2: {'slope': -0.033584, 'intercept': 1.461775},
-    3: {'slope': -0.056547, 'intercept': 1.536987},
-    4: {'slope': -0.033843, 'intercept': 1.451625},
-    5: {'slope': -0.044780, 'intercept': 1.517810},
-    6: {'slope': -0.021815, 'intercept': 1.426640},
-    7: {'slope': -0.067644, 'intercept': 1.601094},
-    8: {'slope': -0.011359, 'intercept': 1.404903},
-    9: {'slope': -0.073198, 'intercept': 1.584765},
-    10: {'slope': 0.129044, 'intercept': 0.863844},
+    1: {'slope': -0.030978, 'intercept': 1.443219},
+    2: {'slope': -0.032349, 'intercept': 1.457172},
+    3: {'slope': -0.042253, 'intercept': 1.496206},
+    4: {'slope': -0.024838, 'intercept': 1.424380},
+    5: {'slope': -0.047032, 'intercept': 1.523252},
+    6: {'slope': -0.023907, 'intercept': 1.429536},
+    7: {'slope': -0.063772, 'intercept': 1.585484},
+    8: {'slope': -0.020332, 'intercept': 1.419779},
+    9: {'slope': -0.053909, 'intercept': 1.536003},
+    10: {'slope': 0.052778, 'intercept': 1.060467},
 }
 
 STANDARD_BIN_EDGES = [0.74, 0.95, 1.15, 1.40, 1.65, 2.05, 2.45, 2.90, 3.50, 4.15, 5.05]

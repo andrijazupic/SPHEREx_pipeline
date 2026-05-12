@@ -14,6 +14,8 @@ from photutils.detection import DAOStarFinder
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from astropy.visualization import ZScaleInterval
+from astroquery.gaia import Gaia
+import scipy.ndimage as ndimage
 
 
 # Silence warnings from photutils (empty images) and WCS (non-standard headers)
@@ -58,9 +60,36 @@ SURVEY_CONFIGS = {
 
 FALLBACK_CHAIN = ['Legacy', 'PanSTARRS', 'SDSS', 'DSS2']
 
+# ── 0. The Profile Checker ─────────────────────────────────────────────────────
+
+def is_real_source(data, target_x, target_y, contam_x, contam_y, min_prominence=0.10):
+    """
+    Extracts a 1D pixel profile between the target star and a potential contaminant.
+    Returns True if the contaminant has a distinct 'valley' separating it from the target.
+    """
+    num_points = 100
+    x_line = np.linspace(target_x, contam_x, num_points)
+    y_line = np.linspace(target_y, contam_y, num_points)
+    
+    profile = ndimage.map_coordinates(data, np.vstack((y_line, x_line)))
+    contam_peak = profile[-1]
+    valley_val = np.min(profile[10:-10])
+    
+    bump_height = contam_peak - valley_val
+    
+    if bump_height <= 0:
+        return False
+        
+    prominence_ratio = bump_height / contam_peak
+    if prominence_ratio < min_prominence:
+        return False
+        
+    return True
+
+
 # ── 1. The Headless Fitter ─────────────────────────────────────────────────────
 
-def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey_name, search_radius_arcsec, wing_multiplier):
+def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey_name, search_radius_arcsec, wing_multiplier, g_mag=np.nan):
     """
     PUBLICATION-GRADE WCS PSF FITTER.
     Finds the true observed center of the target first, then anchors all
@@ -80,12 +109,55 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
     fwhm_pixels = cfg['fwhm_arcsec'] / true_pixscale_arcsec
     threshold_val = cfg['detection_sigma'] * std
     centering_tolerance = cfg['centering_tolerance']
-    
-    daofind = DAOStarFinder(fwhm=fwhm_pixels, threshold=threshold_val)
-    sources = daofind(data - median)
+
+    # ── DYNAMIC HALO & SENSITIVITY THRESHOLDS ──
+    if not np.isnan(g_mag) and g_mag < 15.0:
+        # ZONE 2: Bright Stars.
+        prominence_thresh = 0.15
+        halo_check_radius = 7.0
+        do_heal_debounce = False
+    else:
+        # ZONE 3: Faint Stars / White Dwarfs.
+        prominence_thresh = 0.1
+        halo_check_radius = 4.0
+        do_heal_debounce = False
+
+    # ── IMAGE HEALING ──
+    if do_heal_debounce:
+        det_data = np.nan_to_num(data, nan=0.0)
+        det_data = ndimage.grey_closing(det_data, size=(9, 9))
+        det_data = ndimage.gaussian_filter(det_data, sigma=1.0)
+    else:
+        det_data = data
+
+    # ── SHAPE FILTERED DETECTION ──
+    daofind = DAOStarFinder(
+        fwhm=fwhm_pixels, 
+        threshold=threshold_val,
+        sharplo=0.4, sharphi=2.0,   
+        roundlo=-1.0, roundhi=1.0   
+    )
+    sources = daofind(det_data - median)
     
     if sources is None or len(sources) == 0:
         return 0, False 
+
+    # ── SPATIAL DEBOUNCING (SHRAPNEL FILTER) ──
+    if do_heal_debounce:
+        sources.sort('peak', reverse=True)
+        valid_indices = []
+        debounce_radius = fwhm_pixels * 1.5
+        for i in range(len(sources)):
+            keep = True
+            for j in valid_indices:
+                dist = np.hypot(sources['xcentroid'][i] - sources['xcentroid'][j],
+                                sources['ycentroid'][i] - sources['ycentroid'][j])
+                if dist < debounce_radius:
+                    keep = False
+                    break
+            if keep:
+                valid_indices.append(i)
+        sources = sources[valid_indices]
     
     sigma_pixels = fwhm_pixels / 2.35482 
     theoretical_coord = SkyCoord(ra=theoretical_ra, dec=theoretical_dec, unit=(u.deg, u.deg), frame='icrs')
@@ -119,9 +191,19 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
         separations_to_use = separations_from_theoretical
     
     # --- ITERATE SOURCES USING THE ANCHORED DISTANCES ---
-    for i, (sep, peak) in enumerate(zip(separations_to_use, peak_values)):
+    for i, (sep, peak, cx, cy) in enumerate(zip(separations_to_use, peak_values, x_positions, y_positions)):
         if i == target_index:
             continue 
+
+        # --- THE PROFILE CHECK ---
+        # Only check sources inside the dynamic halo radius if we actually found a central star
+        if found_central_source and sep < halo_check_radius:
+            actual_target_x = x_positions[target_index]
+            actual_target_y = y_positions[target_index]
+            # Pass original data (minus median) for the raw profile check
+            if not is_real_source(data - median, actual_target_x, actual_target_y, cx, cy, min_prominence=prominence_thresh):
+                continue # Skip this source, it's just halo shine!
+        # -------------------------
 
         if peak > threshold_val:
             wing_radius_pixels = sigma_pixels * np.sqrt(2 * np.log(peak / threshold_val))
@@ -138,7 +220,7 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
 
 # ── 2. The Fetcher ─────────────────────────────────────────────────────────────
 
-def get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier):
+def get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier, g_mag=np.nan):
     """
     Downloads FITS and validates the central source using the Fallback Chain.
     """
@@ -172,7 +254,7 @@ def get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier)
                 
                 if data is not None and data.size > 0 and np.any(np.isfinite(data)):
                     num_opt, found = count_sources_in_image(
-                        data, header, ra, dec, survey_name, search_radius_arcsec, wing_multiplier
+                        data, header, ra, dec, survey_name, search_radius_arcsec, wing_multiplier, g_mag
                     )
                     
                     if found or survey_name == FALLBACK_CHAIN[-1]:
@@ -199,11 +281,27 @@ def flag_image_contamination(df, fov_arcsec=30, search_radius_arcsec=9.3, wing_m
         ra = row['ra']
         dec = row['dec']
         
-        data_opt, head_opt, survey_opt = get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier)
+        # Smartly grab the G magnitude if it exists, otherwise fetch it.
+        g_mag = np.nan
+        if 'phot_g_mean_mag' in row and not pd.isna(row['phot_g_mean_mag']):
+            g_mag = row['phot_g_mean_mag']
+        else:
+            try:
+                coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree), frame='icrs')
+                res = Gaia.cone_search_async(coord, radius=u.Quantity(2.0, u.arcsec)).get_results().to_pandas()
+                if not res.empty:
+                    res['dist'] = np.hypot(res['ra'] - ra, res['dec'] - dec)
+                    g_mag = res.sort_values('dist').iloc[0]['phot_g_mean_mag']
+            except Exception:
+                pass
+        
+        # Pass the g_mag to the FITS fetcher (which passes it to the counter)
+        data_opt, head_opt, survey_opt = get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier, g_mag)
         
         if data_opt is not None:
+            # We also pass the g_mag directly into the counter here
             num_opt, found_center = count_sources_in_image(
-                data_opt, head_opt, ra, dec, survey_opt, search_radius_arcsec, wing_multiplier
+                data_opt, head_opt, ra, dec, survey_opt, search_radius_arcsec, wing_multiplier, g_mag
             )
 
             if not found_center:
@@ -317,7 +415,7 @@ def fetch_with_fallback(ra, dec, fov_arcsec, chain, exclude_list=[]):
 
 # ── Main plotting function ─────────────────────────────────────────────────────
 
-def plot_survey_comparison(source_id, ra, dec, fov_arcsec=30, search_radius_arcsec=9.3, wing_multiplier=1.0):
+def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search_radius_arcsec=9.3, wing_multiplier=1.0):
     """
     Fetches and plots a side-by-side visual comparison of the target across multiple optical surveys.
     
@@ -328,10 +426,19 @@ def plot_survey_comparison(source_id, ra, dec, fov_arcsec=30, search_radius_arcs
     DAOStarFinder, and visualizes potential contamination by drawing dynamic 
     Point Spread Function (PSF) wings based on each survey's optical properties.
 
+    To ensure high accuracy, the function implements a magnitude-dependent artifact 
+    filtering strategy. It automatically skips detection for heavily saturated bright 
+    stars (G < 13) to avoid "shredding" artifacts, and applies dynamic saddle-point 
+    deblending (profile checking) to distinguish real faint companions from artificial 
+    halo shine on fainter targets.
+
     Args:
         source_id (int or str): The unique identifier for the target (used for the plot title).
         ra (float): Right Ascension of the target in degrees (ICRS).
         dec (float): Declination of the target in degrees (ICRS).
+        g_mag (float, optional): The Gaia G-band mean magnitude. Dictates artifact 
+            filter sensitivity and whether image fitting is bypassed. If None, it 
+            will be automatically queried from the Gaia database prior to plotting.
         fov_arcsec (float, optional): The field of view for the downloaded FITS 
             cutouts in arcseconds. Defaults to 30.
         search_radius_arcsec (float, optional): The radial distance in arcseconds to 
@@ -346,6 +453,23 @@ def plot_survey_comparison(source_id, ra, dec, fov_arcsec=30, search_radius_arcs
         and contamination diagnostics.
     """
     print(f"\nFetching images for Source {source_id} (ra={ra:.5f}, dec={dec:.5f})")
+    
+    # ── 1. Fetch Gaia Magnitude by RA/DEC ──
+    if not g_mag:
+        g_mag = np.nan
+        try:
+            coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree), frame='icrs')
+            res = Gaia.cone_search_async(coord, radius=u.Quantity(2.0, u.arcsec)).get_results().to_pandas()
+            if not res.empty:
+                res['dist'] = np.hypot(res['ra'] - ra, res['dec'] - dec)
+                g_mag = res.sort_values('dist').iloc[0]['phot_g_mean_mag']
+        except Exception:
+            pass
+
+    is_bright = False
+    if not np.isnan(g_mag) and g_mag < 13:
+        is_bright = True
+        print(f"  ⚠️ Target is bright (G={g_mag:.2f}). Skipping DAOStarFinder fitting to avoid shredding.")
     
     print("  Slot 1:")
     data1, head1, name1 = fetch_with_fallback(ra, dec, fov_arcsec, FALLBACK_CHAIN_SLOT1)
@@ -376,72 +500,95 @@ def plot_survey_comparison(source_id, ra, dec, fov_arcsec=30, search_radius_arcs
         target_coord = SkyCoord(ra=ra, dec=dec, unit='deg', frame='icrs')
         target_x, target_y = wcs.world_to_pixel(target_coord)
 
-        # ── Detection ──
-        fwhm_pix = cfg['fwhm_arcsec'] / true_pixscale_arcsec
-        _, median, std = sigma_clipped_stats(data, sigma=3.0)
-        std = max(std, 0.001) 
-        
-        # FIXED: Now pulling threshold from the config file!
-        threshold = cfg['detection_sigma'] * std
-
-        sources = DAOStarFinder(fwhm=fwhm_pix, threshold=threshold)(data - median)
-
+        # ALWAYS plot the central marker and bounds, even if skipping detection
         ax.add_patch(patches.Circle((target_x, target_y), search_radius_arcsec / true_pixscale_arcsec,
                                     linewidth=2, edgecolor='cyan', facecolor='none', linestyle='--'))
-        
         ax.plot(target_x, target_y, 'x', color='black', markersize=10, markeredgewidth=4)
         ax.plot(target_x, target_y, 'x', color='blue', markersize=6, markeredgewidth=2)
 
-        found_tgt, n_contam, total_sources = False, 0, 0
-        
-        if sources is not None and len(sources) > 0:
-            total_sources = len(sources)
-            x_col, y_col, peak_col = sources['xcentroid'], sources['ycentroid'], sources['peak']
-            sigma_pix = fwhm_pix / 2.35482
-
-            # Find distance to theoretical center to identify target
-            seps_theoretical = [np.hypot(x_col[i] - target_x, y_col[i] - target_y) * true_pixscale_arcsec for i in range(total_sources)]
-            min_idx = int(np.argmin(seps_theoretical))
-            
-            # ANCHOR LOGIC: Re-measure distances relative to the observed star
-            if seps_theoretical[min_idx] <= cfg['centering_tolerance']:
-                found_tgt = True
-                tgt_idx = min_idx
-                actual_target_x = x_col[tgt_idx]
-                actual_target_y = y_col[tgt_idx]
-                seps = [np.hypot(x_col[i] - actual_target_x, y_col[i] - actual_target_y) * true_pixscale_arcsec for i in range(total_sources)]
-            else:
-                tgt_idx = -1
-                seps = seps_theoretical
-
-            for i in range(total_sources):
-                cx, cy, cp, sep = x_col[i], y_col[i], peak_col[i], seps[i]
-
-                if i == tgt_idx:
-                    ax.plot(cx, cy, 'o', color='black', markersize=8, markeredgewidth=0)
-                    ax.plot(cx, cy, 'o', color='blue', mfc='none', markersize=8, markeredgewidth=2)
-                    continue
-
-                wing_pix = (sigma_pix * np.sqrt(2 * np.log(cp / threshold)) if cp > threshold else 0)
-                wing_arcsec = wing_pix * true_pixscale_arcsec * wing_multiplier
-
-                is_contam = (sep - wing_arcsec) <= search_radius_arcsec
-                color = 'red' if is_contam else 'green'
-                if is_contam: n_contam += 1
-
-                ax.plot(cx, cy, 'x', color='black', markersize=8, markeredgewidth=3)
-                ax.plot(cx, cy, 'x', color=color, markersize=6, markeredgewidth=2)
-                ax.add_patch(patches.Circle((cx, cy), wing_pix * wing_multiplier,
-                                            linewidth=2, edgecolor=color, facecolor='none', linestyle=':'))
-
-            info = f"Sources found: {total_sources}\nTarget found: {found_tgt}\nContaminated: {n_contam}"
-            txt_color = 'green' if found_tgt and n_contam == 0 else 'orange'
+        # ── Bypass Detection for Bright Sources ──
+        if is_bright:
+            info = f"Fitting Skipped\nTarget too bright (G={g_mag:.2f})"
             ax.text(0.95, 0.05, info, ha='right', va='bottom', transform=ax.transAxes, 
-                    color=txt_color, fontweight='bold', fontsize=10, 
-                    bbox=dict(facecolor='white', alpha=0.8, edgecolor=txt_color))
+                    color='blue', fontweight='bold', fontsize=10, 
+                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='blue'))
         else:
-            ax.text(0.95, 0.05, "No Sources Found", ha='right', va='bottom', transform=ax.transAxes,
-                    color='red', fontweight='bold', fontsize=10, bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
+            # ── Standard Detection ──
+            fwhm_pix = cfg['fwhm_arcsec'] / true_pixscale_arcsec
+            _, median, std = sigma_clipped_stats(data, sigma=3.0)
+            std = max(std, 0.001) 
+            
+            threshold = cfg['detection_sigma'] * std
+            sources = DAOStarFinder(fwhm=fwhm_pix, threshold=threshold)(data - median)
+
+            found_tgt, n_contam, total_sources = False, 0, 0
+            
+            if sources is not None and len(sources) > 0:
+                total_sources = len(sources)
+                x_col, y_col, peak_col = sources['xcentroid'], sources['ycentroid'], sources['peak']
+                sigma_pix = fwhm_pix / 2.35482
+
+                # Find distance to theoretical center to identify target
+                seps_theoretical = [np.hypot(x_col[i] - target_x, y_col[i] - target_y) * true_pixscale_arcsec for i in range(total_sources)]
+                min_idx = int(np.argmin(seps_theoretical))
+                
+                # ANCHOR LOGIC: Re-measure distances relative to the observed star
+                if seps_theoretical[min_idx] <= cfg['centering_tolerance']:
+                    found_tgt = True
+                    tgt_idx = min_idx
+                    actual_target_x = x_col[tgt_idx]
+                    actual_target_y = y_col[tgt_idx]
+                    seps = [np.hypot(x_col[i] - actual_target_x, y_col[i] - actual_target_y) * true_pixscale_arcsec for i in range(total_sources)]
+                else:
+                    tgt_idx = -1
+                    seps = seps_theoretical
+
+                # Determine how aggressive the artifact filter should be based on target brightness
+                if not np.isnan(g_mag) and g_mag < 15.0:
+                    # ZONE 2: Bright Stars. Large noisy halo, aggressive filtering.
+                    prominence_thresh = 0.15
+                    halo_check_radius = 7.0
+                else:
+                    # ZONE 3: Faint Stars / White Dwarfs. Small halo, high sensitivity.
+                    prominence_thresh = 0.1
+                    halo_check_radius = 4.0
+
+                for i in range(total_sources):
+                    cx, cy, cp, sep = x_col[i], y_col[i], peak_col[i], seps[i]
+
+                    if i == tgt_idx:
+                        ax.plot(cx, cy, 'o', color='black', markersize=8, markeredgewidth=0)
+                        ax.plot(cx, cy, 'o', color='blue', mfc='none', markersize=8, markeredgewidth=2)
+                        continue
+
+                    # --- THE PROFILE CHECK ---
+                    # Only check sources inside the dynamic halo radius
+                    if sep < halo_check_radius:
+                        # Pass the dynamic prominence threshold to the function
+                        if not is_real_source(data - median, actual_target_x, actual_target_y, cx, cy, min_prominence=prominence_thresh):
+                            continue # Skip this source, it's just halo shine!
+                    # -------------------------
+
+                    wing_pix = (sigma_pix * np.sqrt(2 * np.log(cp / threshold)) if cp > threshold else 0)
+                    wing_arcsec = wing_pix * true_pixscale_arcsec * wing_multiplier
+
+                    is_contam = (sep - wing_arcsec) <= search_radius_arcsec
+                    color = 'red' if is_contam else 'green'
+                    if is_contam: n_contam += 1
+
+                    ax.plot(cx, cy, 'x', color='black', markersize=8, markeredgewidth=3)
+                    ax.plot(cx, cy, 'x', color=color, markersize=6, markeredgewidth=2)
+                    ax.add_patch(patches.Circle((cx, cy), wing_pix * wing_multiplier,
+                                                linewidth=2, edgecolor=color, facecolor='none', linestyle=':'))
+
+                info = f"Sources found: {total_sources}\nTarget found: {found_tgt}\nContaminated: {n_contam}"
+                txt_color = 'green' if found_tgt and n_contam == 0 else 'orange'
+                ax.text(0.95, 0.05, info, ha='right', va='bottom', transform=ax.transAxes, 
+                        color=txt_color, fontweight='bold', fontsize=10, 
+                        bbox=dict(facecolor='white', alpha=0.8, edgecolor=txt_color))
+            else:
+                ax.text(0.95, 0.05, "No Sources Found", ha='right', va='bottom', transform=ax.transAxes,
+                        color='red', fontweight='bold', fontsize=10, bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
 
         ax.set_title(f"{cfg['label']} ({cfg['detection_sigma']}-sigma)\n({true_pixscale_arcsec:.3f}\"/px) | Bounds: {search_radius_arcsec}\" | Wing: {wing_multiplier}", 
                      fontsize=11, fontweight='bold')
