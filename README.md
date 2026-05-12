@@ -55,7 +55,7 @@ The pipeline is executed via the `spherex_contamination_analysis` wrapper functi
 
 ```python
 import pandas as pd
-from spherex_contamination_analysis import spherex_contamination_analysis
+from pipeline.spherex_contamination_analysis import spherex_contamination_analysis
 
 # Load your target catalog
 df = pd.read_csv("my_targets.csv")
@@ -80,7 +80,7 @@ The pipeline includes a `plot_survey_comparison` function to visually verify the
 **Example Implementation:**
 
 ```python
-from image_contamination import plot_survey_comparison
+from pipeline.image_contamination import plot_survey_comparison
 
 # Visualize the two highest-resolution available optical cutouts for a single source.
 # Note: If g_mag is not explicitly provided, the function will auto-fetch it from Gaia.
@@ -139,7 +139,7 @@ The extraction is handled by `spxquery_get_spectrum_calibrated`.
 **Example Implementation:**
 
 ```python
-from spxquery_wrapper import spxquery_get_spectrum_calibrated
+from pipeline.spxquery_wrapper import spxquery_get_spectrum_calibrated
 
 # Extract and calibrate a single source from a dataframe row
 spectrum_df = spxquery_get_spectrum_calibrated(
