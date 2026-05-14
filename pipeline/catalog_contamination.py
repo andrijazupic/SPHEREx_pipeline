@@ -9,7 +9,7 @@ from astropy.coordinates import SkyCoord
 import pandas as pd
 import numpy as np
 
-# Silence the annoying "INFO: Query finished" spam
+# Silence the "INFO: Query finished" spam
 logging.getLogger('astroquery').setLevel(logging.WARNING)
 
 
@@ -94,13 +94,11 @@ def remove_desi_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.0, mi
                        max_retries=3, ignore_psf_contaminants=False, min_snr=11.0, verbose=False):
     """
     Flags candidates with neighboring sources in the DESI DR10 Tractor catalog.
-    Finds the central Target WD first, then calculates distances to other sources relative to the WD.
-    Filters out noise (SNR), ignores PSFs, and ignores de-blending artifacts too close to the core.
+    Dynamic Red-Fallback: Evaluates z -> r -> g to find the reddest valid flux.
     """
     tap_service = TAPService("https://datalab.noirlab.edu/tap")
 
     total_sources = len(df)
-    
     query_radius_arcsec = search_radius_arcsec + centering_tolerance
     radius_deg = query_radius_arcsec / 3600.0
 
@@ -120,7 +118,9 @@ def remove_desi_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.0, mi
         dec  = row['dec']
 
         query = f"""
-            SELECT objid, ra, dec, type, flux_r, flux_ivar_r, Q3C_DIST(ra, dec, {ra}, {dec}) * 3600.0 AS dist_arcsec
+            SELECT objid, ra, dec, type, 
+                   flux_z, flux_ivar_z, flux_r, flux_ivar_r, flux_g, flux_ivar_g,
+                   Q3C_DIST(ra, dec, {ra}, {dec}) * 3600.0 AS dist_arcsec
             FROM   ls_dr10.tractor
             WHERE  't' = Q3C_RADIAL_QUERY(ra, dec, {ra}, {dec}, {radius_deg})
         """
@@ -133,108 +133,90 @@ def remove_desi_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.0, mi
             try:
                 result     = tap_service.search(query)
                 cone_data  = result.to_table().to_pandas()
-                
-                n_total = len(cone_data)
+                n_total    = len(cone_data)
                 
                 if n_total > 0:
                     cone_data['dist_arcsec'] = pd.to_numeric(cone_data['dist_arcsec'], errors='coerce')
+                    cone_data['type_clean'] = cone_data['type'].apply(lambda t: t.decode('utf-8').strip() if isinstance(t, bytes) else str(t).strip())
                     
-                    cone_data['flux_r'] = pd.to_numeric(cone_data['flux_r'], errors='coerce').fillna(0)
-                    cone_data['flux_ivar_r'] = pd.to_numeric(cone_data['flux_ivar_r'], errors='coerce').fillna(0)
+                    # ── DYNAMIC RED-FALLBACK LOGIC ──
+                    bands = ['z', 'r', 'g']
+                    for b in bands:
+                        f = pd.to_numeric(cone_data[f'flux_{b}'], errors='coerce').fillna(0)
+                        ivar = pd.to_numeric(cone_data[f'flux_ivar_{b}'], errors='coerce').fillna(0)
+                        cone_data[f'snr_{b}'] = f * np.sqrt(np.clip(ivar, 0, None))
                     
-                    cone_data['snr_r'] = cone_data['flux_r'] * np.sqrt(np.clip(cone_data['flux_ivar_r'], 0, None))
+                    conditions = [cone_data[f'snr_{b}'] > 0 for b in bands]
+                    choices_snr = [cone_data[f'snr_{b}'] for b in bands]
                     
-                    cone_data['type_clean'] = cone_data['type'].apply(
-                        lambda t: t.decode('utf-8').strip() if isinstance(t, bytes) else str(t).strip()
-                    )
+                    cone_data['best_snr'] = np.select(conditions, choices_snr, default=0)
+                    cone_data['best_band'] = np.select(conditions, bands, default='none')
                     
-                    # --- NEAREST NEIGHBOR LOGIC ---
+                    # ── NEAREST NEIGHBOR LOGIC ──
                     min_idx = cone_data['dist_arcsec'].idxmin()
                     min_dist = cone_data.loc[min_idx, 'dist_arcsec']
-                    
                     target_found = min_dist <= centering_tolerance
                     
                     if target_found:
-                        target_ra_desi = cone_data.loc[min_idx, 'ra']
-                        target_dec_desi = cone_data.loc[min_idx, 'dec']
-                        target_objid = cone_data.loc[min_idx, 'objid']
-                        
-                        target_coord = SkyCoord(ra=target_ra_desi, dec=target_dec_desi, unit=(u.deg, u.deg), frame='icrs')
+                        target_coord = SkyCoord(ra=cone_data.loc[min_idx, 'ra'], dec=cone_data.loc[min_idx, 'dec'], unit=(u.deg, u.deg), frame='icrs')
                         cat_coords = SkyCoord(ra=cone_data['ra'].values, dec=cone_data['dec'].values, unit=(u.deg, u.deg), frame='icrs')
-                        
                         cone_data['sep_from_target'] = target_coord.separation(cat_coords).arcsec
                         
-                        contaminants = cone_data[
-                            (cone_data['objid'] != target_objid) & 
-                            (cone_data['sep_from_target'] <= search_radius_arcsec)
-                        ]
-                        dist_col = 'sep_from_target' # Set dynamic distance column
-                        
+                        contaminants = cone_data[(cone_data['objid'] != cone_data.loc[min_idx, 'objid']) & (cone_data['sep_from_target'] <= search_radius_arcsec)]
+                        dist_col = 'sep_from_target'
+                        target_snr, target_band = cone_data.loc[min_idx, 'best_snr'], cone_data.loc[min_idx, 'best_band']
                     else:
                         contaminants = cone_data.iloc[0:0] 
                         dist_col = 'dist_arcsec' 
                     
-                    # --- THE FILTERS ---
+                    # ── THE FILTERS ──
                     if ignore_psf_contaminants:
                         contaminants = contaminants[contaminants['type_clean'] != 'PSF']
-                        
-                    contaminants = contaminants[contaminants['snr_r'] >= min_snr]
+                    contaminants = contaminants[contaminants['best_snr'] >= min_snr]
                     contaminants = contaminants[contaminants[dist_col] >= min_separation_arcsec]
-                        
                     n_contaminants = len(contaminants)
                         
                 else:
                     n_contaminants = 0
                     contaminants = pd.DataFrame()
 
-                # --- DECISION ---
+                # ── DECISION ──
                 if n_contaminants == 0:
                     is_contaminated.append(False)
                     if n_total == 0:
                         msg = f"⚠️ Source {sid}: No data found (likely outside footprint). Kept as clean."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
                     elif not target_found:
-                        msg = f"⚠️ Source {sid}: Target WD not found. Skipping contaminant check and kept as clean."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"⚠️ Source {sid}: Target not found. Skipping contaminant check and kept as clean."
                     else:
-                        msg = f"🟢 Source {sid}: Clean isolated target."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🟢 Source {sid}: Clean. (Target SNR_{target_band}: {target_snr:.1f})"
+                    
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
+                    notes.append(msg)
                 else:
                     is_contaminated.append(True)
-                    types_with_dists = []
-                    for t, d, s in zip(contaminants['type_clean'], contaminants[dist_col], contaminants['snr_r']):
-                        types_with_dists.append(f"{t} ({d:.2f}\", SNR:{s:.1f})")
+                    t_list = [f"{t} ({d:.2f}\", SNR_{b}:{s:.1f})" for t, d, s, b in zip(contaminants['type_clean'], contaminants[dist_col], contaminants['best_snr'], contaminants['best_band'])]
                     
                     if not target_found:
-                        msg = f"🔴 Flagging Source {sid}: Target WD missing AND {n_contaminants} real extended neighbour(s) found {types_with_dists}."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🔴 Flagging Source {sid}: Target missing AND {n_contaminants} Tractor neighbour(s) found {t_list}."
                     else:
-                        msg = f"🔴 Flagging Source {sid}: {n_contaminants} real Tractor neighbour(s) found {types_with_dists}."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🔴 Flagging Source {sid}: {n_contaminants} Tractor neighbour(s) found {t_list}."
+                        
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
+                    notes.append(msg)
 
                 success = True
 
             except Exception as e:
                 attempts += 1
-                if attempts < max_retries:
+                if attempts < max_retries: 
                     time.sleep(2)
                 else:
                     msg = f"❌ Gave up on Source {sid} after {max_retries} attempts. Kept as clean. Error: {e}"
                     print(msg)
-                    is_contaminated.append(False) # Safe default to flag on failure
+                    is_contaminated.append(False)
                     notes.append(msg)
 
-        time.sleep(0.5)   # polite rate-limit delay
+        time.sleep(0.5)
 
     # Append columns to the original dataframe
     df = df.copy()
@@ -256,14 +238,12 @@ def remove_desi_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.0, mi
 def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.0, min_separation_arcsec=1.0, 
                             max_retries=3, ignore_psf_contaminants=False, min_snr=9, verbose=False):
     """
-    Flags candidates with neighboring sources in the Pan-STARRS DR1 catalog via VizieR.
-    Uses identical spatial/anchoring logic to the DESI filter.
-    Separates stars from galaxies using the mathematical difference between PSF and Kron magnitudes.
+    Flags candidates with neighboring sources in Pan-STARRS DR1.
+    Dynamic Red-Fallback: Evaluates y -> z -> i -> r to find the reddest valid magnitude.
     """
     tap_service = TAPService("https://tapvizier.u-strasbg.fr/TAPVizieR/tap")
 
     total_sources = len(df)
-    
     query_radius_arcsec = search_radius_arcsec + centering_tolerance
     radius_deg = query_radius_arcsec / 3600.0
 
@@ -282,10 +262,10 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
         ra   = row['ra']
         dec  = row['dec']
 
-        # Pan-STARRS VizieR Table: "II/349/ps1"
-        # rmag = PSF magnitude | rKmag = Kron (extended) magnitude
         query = f"""
-            SELECT objID, RAJ2000 as ra, DEJ2000 as dec, rmag, e_rmag, rKmag
+            SELECT objID, RAJ2000 as ra, DEJ2000 as dec, 
+                   ymag, e_ymag, yKmag, zmag, e_zmag, zKmag, 
+                   imag, e_imag, iKmag, rmag, e_rmag, rKmag
             FROM "II/349/ps1"
             WHERE 1=CONTAINS(POINT('ICRS', RAJ2000, DEJ2000), CIRCLE('ICRS', {ra}, {dec}, {radius_deg}))
         """
@@ -296,9 +276,8 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
 
         while not success and attempts < max_retries:
             try:
-                result     = tap_service.search(query)
-                cone_data  = result.to_table().to_pandas()
-                
+                result = tap_service.search(query)
+                cone_data = result.to_table().to_pandas()
                 n_total = len(cone_data)
                 
                 if n_total > 0:
@@ -306,99 +285,78 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
                     cat_coords = SkyCoord(ra=cone_data['ra'].values, dec=cone_data['dec'].values, unit=(u.deg, u.deg), frame='icrs')
                     cone_data['dist_arcsec'] = theoretical_coord.separation(cat_coords).arcsec
                     
-                    # Safely calculate Signal-to-Noise Ratio from the magnitude error
-                    cone_data['e_rmag'] = pd.to_numeric(cone_data['e_rmag'], errors='coerce')
-                    cone_data['snr_r'] = np.where(cone_data['e_rmag'] > 0, 1.0857 / cone_data['e_rmag'], 0)
+                    # ── DYNAMIC RED-FALLBACK LOGIC ──
+                    bands = ['y', 'z', 'i', 'r']
+                    for b in bands:
+                        e_mag = pd.to_numeric(cone_data[f'e_{b}mag'], errors='coerce').fillna(0)
+                        mag = pd.to_numeric(cone_data[f'{b}mag'], errors='coerce').fillna(np.nan)
+                        kmag = pd.to_numeric(cone_data[f'{b}Kmag'], errors='coerce').fillna(np.nan)
+                        
+                        cone_data[f'snr_{b}'] = np.where(e_mag > 0, 1.0857 / e_mag, 0)
+                        cone_data[f'ext_{b}'] = (mag - kmag) > 0.05
                     
-                    # Morphology Logic: r_PSF - r_Kron
-                    cone_data['rmag'] = pd.to_numeric(cone_data['rmag'], errors='coerce')
-                    cone_data['rKmag'] = pd.to_numeric(cone_data['rKmag'], errors='coerce')
+                    conditions = [cone_data[f'snr_{b}'] > 0 for b in bands]
+                    cone_data['best_snr'] = np.select(conditions, [cone_data[f'snr_{b}'] for b in bands], default=0)
+                    cone_data['is_extended'] = np.select(conditions, [cone_data[f'ext_{b}'] for b in bands], default=False)
+                    cone_data['best_band'] = np.select(conditions, bands, default='none')
+                    cone_data['type_clean'] = np.where(cone_data['is_extended'], 'Galaxy', 'Star')
                     
-                    # If PSF is >0.05 magnitudes fainter than Kron, it's fuzzy!
-                    is_extended = (cone_data['rmag'] - cone_data['rKmag']) > 0.05
-                    cone_data['type_clean'] = np.where(is_extended, 'Galaxy', 'Star')
-                    
-                    # --- NEAREST NEIGHBOR LOGIC ---
+                    # ── NEAREST NEIGHBOR LOGIC ──
                     min_idx = cone_data['dist_arcsec'].idxmin()
                     min_dist = cone_data.loc[min_idx, 'dist_arcsec']
-                    
                     target_found = min_dist <= centering_tolerance
                     
                     if target_found:
-                        target_ra_ps1 = cone_data.loc[min_idx, 'ra']
-                        target_dec_ps1 = cone_data.loc[min_idx, 'dec']
-                        target_objid = cone_data.loc[min_idx, 'objID']
-                        
-                        target_snr = cone_data.loc[min_idx, 'snr_r']
-                        
-                        # ANCHOR TO TARGET
-                        target_coord = SkyCoord(ra=target_ra_ps1, dec=target_dec_ps1, unit=(u.deg, u.deg), frame='icrs')
+                        target_coord = SkyCoord(ra=cone_data.loc[min_idx, 'ra'], dec=cone_data.loc[min_idx, 'dec'], unit=(u.deg, u.deg), frame='icrs')
                         cone_data['sep_from_target'] = target_coord.separation(cat_coords).arcsec
                         
-                        contaminants = cone_data[
-                            (cone_data['objID'] != target_objid) & 
-                            (cone_data['sep_from_target'] <= search_radius_arcsec)
-                        ]
+                        contaminants = cone_data[(cone_data['objID'] != cone_data.loc[min_idx, 'objID']) & (cone_data['sep_from_target'] <= search_radius_arcsec)]
                         dist_col = 'sep_from_target'
-                        
+                        target_snr, target_band = cone_data.loc[min_idx, 'best_snr'], cone_data.loc[min_idx, 'best_band']
                     else:
-                        # Target missing. Ignore rest of field.
                         contaminants = cone_data.iloc[0:0] 
                         dist_col = 'dist_arcsec'
                     
-                    # --- THE FILTERS ---
+                    # ── THE FILTERS ──
                     if ignore_psf_contaminants:
                         contaminants = contaminants[contaminants['type_clean'] == 'Galaxy']
-                        
-                    contaminants = contaminants[contaminants['snr_r'] >= min_snr]
+                    contaminants = contaminants[contaminants['best_snr'] >= min_snr]
                     contaminants = contaminants[contaminants[dist_col] >= min_separation_arcsec]
-                        
                     n_contaminants = len(contaminants)
                         
                 else:
                     n_contaminants = 0
                     contaminants = pd.DataFrame()
 
-                # --- DECISION ---
+                # ── DECISION ──
                 if n_contaminants == 0:
                     is_contaminated.append(False)
                     if n_total == 0:
                         msg = f"⚠️ Source {sid}: No data found (likely outside footprint). Kept as clean."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
                     elif not target_found:
-                        msg = f"⚠️ Source {sid}: Target WD not found. Skipping contaminant check and kept as clean."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"⚠️ Source {sid}: Target not found. Skipping contaminant check and kept as clean."
                     else:
-                        msg = f"🟢 Source {sid}: Clean. Target WD found (SNR: {target_snr:.1f})."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🟢 Source {sid}: Clean. (Target SNR_{target_band}: {target_snr:.1f})"
+                        
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
+                    notes.append(msg)
                 else:
                     is_contaminated.append(True)
-                    types_with_dists = []
-                    for t, d, s in zip(contaminants['type_clean'], contaminants[dist_col], contaminants['snr_r']):
-                        types_with_dists.append(f"{t} ({d:.2f}\", SNR:{s:.1f})")
+                    t_list = [f"{t} ({d:.2f}\", SNR_{b}:{s:.1f})" for t, d, s, b in zip(contaminants['type_clean'], contaminants[dist_col], contaminants['best_snr'], contaminants['best_band'])]
                     
                     if not target_found:
-                        msg = f"🔴 Flagging Source {sid}: Target WD missing AND {n_contaminants} real extended neighbour(s) found {types_with_dists}."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🔴 Flagging Source {sid}: Target missing AND {n_contaminants} PS1 neighbour(s) found {t_list}."
                     else:
-                        msg = f"🔴 Flagging Source {sid}: Target WD found (SNR: {target_snr:.1f}). {n_contaminants} real Pan-STARRS neighbour(s) found {types_with_dists}."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🔴 Flagging Source {sid}: {n_contaminants} PS1 neighbour(s) found {t_list}."
+                        
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
+                    notes.append(msg)
 
                 success = True
 
             except Exception as e:
                 attempts += 1
-                if attempts < max_retries:
+                if attempts < max_retries: 
                     time.sleep(2)
                 else:
                     msg = f"❌ Gave up on Source {sid} after {max_retries} attempts. Kept as clean. Error: {e}"
@@ -428,14 +386,12 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
 def remove_sdss_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.5, min_separation_arcsec=1.5, 
                        max_retries=3, ignore_psf_contaminants=False, min_snr=9, verbose=False):
     """
-    Flags candidates with neighboring sources in the SDSS DR16 catalog via VizieR.
-    Uses exact identical spatial logic to the DESI filter, but adapted for SDSS schema.
+    Flags candidates with neighboring sources in SDSS DR16.
+    Dynamic Red-Fallback: Evaluates z -> i -> r to find the reddest valid magnitude.
     """
-    # VizieR TAP service handles SDSS gracefully
     tap_service = TAPService("https://tapvizier.u-strasbg.fr/TAPVizieR/tap")
 
     total_sources = len(df)
-    
     query_radius_arcsec = search_radius_arcsec + centering_tolerance
     radius_deg = query_radius_arcsec / 3600.0
 
@@ -454,10 +410,9 @@ def remove_sdss_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.5, mi
         ra   = row['ra']
         dec  = row['dec']
 
-        # SDSS VizieR Table: "V/154/sdss16"
-        # class: 3 = Galaxy (Extended), 6 = Star (PSF)
         query = f"""
-            SELECT objID, RA_ICRS as ra, DE_ICRS as dec, class, rmag, e_rmag
+            SELECT objID, RA_ICRS as ra, DE_ICRS as dec, class, 
+                   zmag, e_zmag, imag, e_imag, rmag, e_rmag
             FROM "V/154/sdss16"
             WHERE 1=CONTAINS(POINT('ICRS', RA_ICRS, DE_ICRS), CIRCLE('ICRS', {ra}, {dec}, {radius_deg}))
         """
@@ -468,104 +423,83 @@ def remove_sdss_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.5, mi
 
         while not success and attempts < max_retries:
             try:
-                result     = tap_service.search(query)
-                cone_data  = result.to_table().to_pandas()
-                
+                result = tap_service.search(query)
+                cone_data = result.to_table().to_pandas()
                 n_total = len(cone_data)
                 
                 if n_total > 0:
-                    # Calculate distances to theoretical center
                     theoretical_coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
                     cat_coords = SkyCoord(ra=cone_data['ra'].values, dec=cone_data['dec'].values, unit=(u.deg, u.deg), frame='icrs')
                     cone_data['dist_arcsec'] = theoretical_coord.separation(cat_coords).arcsec
                     
-                    # Convert magnitude errors to SNR (handling NaNs/Zeros safely)
-                    cone_data['e_rmag'] = pd.to_numeric(cone_data['e_rmag'], errors='coerce')
-                    cone_data['snr_r'] = np.where(cone_data['e_rmag'] > 0, 1.0857 / cone_data['e_rmag'], 0)
-                    
-                    # Clean up SDSS classes for printing
                     cone_data['type_clean'] = cone_data['class'].map({3: 'Galaxy', 6: 'Star'}).fillna('Unknown')
                     
-                    # --- NEAREST NEIGHBOR LOGIC ---
+                    # ── DYNAMIC RED-FALLBACK LOGIC ──
+                    bands = ['z', 'i', 'r']
+                    for b in bands:
+                        e_mag = pd.to_numeric(cone_data[f'e_{b}mag'], errors='coerce').fillna(0)
+                        cone_data[f'snr_{b}'] = np.where(e_mag > 0, 1.0857 / e_mag, 0)
+                        
+                    conditions = [cone_data[f'snr_{b}'] > 0 for b in bands]
+                    cone_data['best_snr'] = np.select(conditions, [cone_data[f'snr_{b}'] for b in bands], default=0)
+                    cone_data['best_band'] = np.select(conditions, bands, default='none')
+                    
+                    # ── NEAREST NEIGHBOR LOGIC ──
                     min_idx = cone_data['dist_arcsec'].idxmin()
                     min_dist = cone_data.loc[min_idx, 'dist_arcsec']
-                    
                     target_found = min_dist <= centering_tolerance
                     
                     if target_found:
-                        target_ra_sdss = cone_data.loc[min_idx, 'ra']
-                        target_dec_sdss = cone_data.loc[min_idx, 'dec']
-                        target_objid = cone_data.loc[min_idx, 'objID']
-                        
-                        target_snr = cone_data.loc[min_idx, 'snr_r']
-                        
-                        target_coord = SkyCoord(ra=target_ra_sdss, dec=target_dec_sdss, unit=(u.deg, u.deg), frame='icrs')
+                        target_coord = SkyCoord(ra=cone_data.loc[min_idx, 'ra'], dec=cone_data.loc[min_idx, 'dec'], unit=(u.deg, u.deg), frame='icrs')
                         cone_data['sep_from_target'] = target_coord.separation(cat_coords).arcsec
                         
-                        contaminants = cone_data[
-                            (cone_data['objID'] != target_objid) & 
-                            (cone_data['sep_from_target'] <= search_radius_arcsec)
-                        ]
+                        contaminants = cone_data[(cone_data['objID'] != cone_data.loc[min_idx, 'objID']) & (cone_data['sep_from_target'] <= search_radius_arcsec)]
                         dist_col = 'sep_from_target'
-                        
+                        target_snr, target_band = cone_data.loc[min_idx, 'best_snr'], cone_data.loc[min_idx, 'best_band']
                     else:
                         contaminants = cone_data.iloc[0:0] 
                         dist_col = 'dist_arcsec'
                     
-                    # --- THE FILTERS ---
+                    # ── THE FILTERS ──
                     if ignore_psf_contaminants:
-                        # Keep only SDSS class 3 (Galaxies)
                         contaminants = contaminants[contaminants['class'] == 3]
-                        
-                    contaminants = contaminants[contaminants['snr_r'] >= min_snr]
+                    contaminants = contaminants[contaminants['best_snr'] >= min_snr]
                     contaminants = contaminants[contaminants[dist_col] >= min_separation_arcsec]
-                        
                     n_contaminants = len(contaminants)
                         
                 else:
                     n_contaminants = 0
                     contaminants = pd.DataFrame()
 
-                # --- DECISION ---
+                # ── DECISION ──
                 if n_contaminants == 0:
                     is_contaminated.append(False)
                     if n_total == 0:
                         msg = f"⚠️ Source {sid}: No data found (likely outside footprint). Kept as clean."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
                     elif not target_found:
-                        msg = f"⚠️ Source {sid}: Target WD not found. Skipping contaminant check and kept as clean."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"⚠️ Source {sid}: Target not found. Skipping contaminant check and kept as clean."
                     else:
-                        msg = f"🟢 Source {sid}: Clean. Target WD found (SNR: {target_snr:.1f})."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🟢 Source {sid}: Clean. (Target SNR_{target_band}: {target_snr:.1f})"
+                        
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
+                    notes.append(msg)
                 else:
                     is_contaminated.append(True)
-                    types_with_dists = []
-                    for t, d, s in zip(contaminants['type_clean'], contaminants[dist_col], contaminants['snr_r']):
-                        types_with_dists.append(f"{t} ({d:.2f}\", SNR:{s:.1f})")
+                    t_list = [f"{t} ({d:.2f}\", SNR_{b}:{s:.1f})" for t, d, s, b in zip(contaminants['type_clean'], contaminants[dist_col], contaminants['best_snr'], contaminants['best_band'])]
                     
                     if not target_found:
-                        msg = f"🔴 Flagging Source {sid}: Target WD missing AND {n_contaminants} real extended neighbour(s) found {types_with_dists}."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🔴 Flagging Source {sid}: Target missing AND {n_contaminants} SDSS neighbour(s) found {t_list}."
                     else:
-                        msg = f"🔴 Flagging Source {sid}: Target WD found (SNR: {target_snr:.1f}). {n_contaminants} real SDSS neighbour(s) found {types_with_dists}."
-                        if verbose:
-                            print(f"[{i}/{total_sources}] {msg}")
-                        notes.append(msg)
+                        msg = f"🔴 Flagging Source {sid}: {n_contaminants} SDSS neighbour(s) found {t_list}."
+                        
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
+                    notes.append(msg)
 
                 success = True
 
             except Exception as e:
                 attempts += 1
-                if attempts < max_retries:
+                if attempts < max_retries: 
                     time.sleep(2)
                 else:
                     msg = f"❌ Gave up on Source {sid} after {max_retries} attempts. Kept as clean. Error: {e}"

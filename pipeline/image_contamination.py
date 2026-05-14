@@ -117,7 +117,7 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
         halo_check_radius = 7.0
         do_heal_debounce = False
     else:
-        # ZONE 3: Faint Stars / White Dwarfs.
+        # ZONE 3: Faint Stars.
         prominence_thresh = 0.1
         halo_check_radius = 4.0
         do_heal_debounce = False
@@ -549,7 +549,7 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
                     prominence_thresh = 0.15
                     halo_check_radius = 7.0
                 else:
-                    # ZONE 3: Faint Stars / White Dwarfs. Small halo, high sensitivity.
+                    # ZONE 3: Faint Stars. Small halo, high sensitivity.
                     prominence_thresh = 0.1
                     halo_check_radius = 4.0
 
