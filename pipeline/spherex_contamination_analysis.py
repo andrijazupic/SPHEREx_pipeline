@@ -68,11 +68,41 @@ def spherex_contamination_analysis(df, search_radius_arcsec=9.3, remove_contamin
     if remove_contaminated:
         clean_sdss_df = clean_sdss_df[clean_sdss_df["is_contaminated_sdss"] == False]
 
-    # 5. Direct Optical Image Astrometric/WCS Check
+    # 5. unWISE DR1 Mid-Infrared Check
+    if verbose:
+        print("\n\n------------------------------ 5. unWISE Mid-IR Check ------------------------------")
+    clean_unwise_df = remove_unwise_blends(clean_sdss_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+    if remove_contaminated:
+        clean_unwise_df = clean_unwise_df[clean_unwise_df["is_contaminated_unwise"] == False]
+
+    # 6. VISTA VHS DR5 Near-Infrared Check
+    if verbose:
+        print("\n\n------------------------------- 6. VISTA VHS DR5 Check -------------------------------")
+    clean_vhs_df = remove_vhs_blends(clean_unwise_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+    if remove_contaminated:
+        clean_vhs_df = clean_vhs_df[clean_vhs_df["is_contaminated_vhs"] == False]
+
+    # 7. Dark Energy Survey (DES) DR2 Check
+    if verbose:
+        print("\n\n-------------------------------- 7. DES DR2 Check --------------------------------")
+    clean_des_df = remove_des_blends(clean_vhs_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+    if remove_contaminated:
+        clean_des_df = clean_des_df[clean_des_df["is_contaminated_des"] == False]
+
+    # 8. UKIDSS Large Area Survey (LAS) DR9 check
+    if verbose:
+        print("\n\n-------------------------------- 8. UKIDSS DR9 Check --------------------------------")
+    clean_ukidss_df = remove_ukidss_blends(clean_des_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+    if remove_contaminated:
+        clean_ukidss_df = clean_ukidss_df[clean_ukidss_df["is_contaminated_des"] == False]
+
+    optical_check_df = clean_ukidss_df
+
+    # 9. Direct Optical Image Astrometric/WCS Check
     if verbose:
         print("\n\n----------------------------- Optical Image Astrometric/WCS Check -----------------------------")
         
-    if not clean_sdss_df.empty:
+    if not optical_check_df.empty:
         # Helper function to fetch G mag by coordinate
         def get_g_mag_by_coord(row):
             import time # Make sure this is imported!
@@ -107,15 +137,15 @@ def spherex_contamination_analysis(df, search_radius_arcsec=9.3, remove_contamin
             print("Ensuring Gaia G magnitudes are present for saturation cutoff...")
             
         # Create a copy to prevent SettingWithCopy warnings
-        working_df = clean_sdss_df.copy()
+        working_df = optical_check_df.copy()
         working_df['phot_g_mean_mag'] = working_df.apply(get_g_mag_by_coord, axis=1)
         
-        # Split into safe (G >= 13 or NaN fallback) and bright (G < 13)
-        bright_df = working_df[working_df['phot_g_mean_mag'] < 13].copy()
-        to_process_df = working_df[(working_df['phot_g_mean_mag'] >= 13) | (working_df['phot_g_mean_mag'].isna())].copy()
+        # Split into safe (G >= 14 or NaN fallback) and bright (G < 14)
+        bright_df = working_df[working_df['phot_g_mean_mag'] < 14].copy()
+        to_process_df = working_df[(working_df['phot_g_mean_mag'] >= 14) | (working_df['phot_g_mean_mag'].isna())].copy()
 
         if verbose:
-            print(f"Skipping image check for {len(bright_df)} bright sources (G < 13).")
+            print(f"Skipping image check for {len(bright_df)} bright sources (G < 14).")
             print(f"Running image check for {len(to_process_df)} sources.")
 
         # Process the faint sources normally
@@ -135,7 +165,7 @@ def spherex_contamination_analysis(df, search_radius_arcsec=9.3, remove_contamin
         if remove_contaminated:
             clean_final_df = clean_final_df[clean_final_df["is_contaminated_image"] == False]
     else:
-        clean_final_df = clean_sdss_df.copy()
+        clean_final_df = optical_check_df.copy()
 
     # --- FINAL MASTER CONTAMINATION FLAG ---
     # Dynamically find all the specific flag columns that were successfully appended

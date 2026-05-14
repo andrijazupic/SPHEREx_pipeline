@@ -24,7 +24,7 @@ warnings.filterwarnings('ignore', module='astropy.wcs')
 
 # ── Survey Registry ────────────────────────────────────────────────────────────
 SURVEY_CONFIGS = {
-    'Legacy': {
+     'Legacy': {
         'bands':               ['z', 'r', 'g'],
         'hips_base':           None,
         'pixscale':            0.262,
@@ -41,6 +41,33 @@ SURVEY_CONFIGS = {
         'detection_sigma':     6.1,
         'centering_tolerance': 2.0,
         'label':               'PanSTARRS DR1',
+    },
+    'DES': {
+        'bands':               ['z', 'i', 'r'],
+        'hips_base':           'CDS/P/DES-DR2/',
+        'pixscale':            0.263,
+        'fwhm_arcsec':         2.0,  # Matched to PanSTARRS/Legacy
+        'detection_sigma':     6.1,  # Deep, clean CCD optics
+        'centering_tolerance': 2.0,  # Modern epoch
+        'label':               'DES DR2',
+    },
+    'VHS': {
+        'bands':               ['Ks', 'H', 'J'],
+        'hips_base':           'CDS/P/VISTA/VHS/',
+        'pixscale':            0.34,
+        'fwhm_arcsec':         2.0,  # Matched to modern optical
+        'detection_sigma':     5.0,  # Standard IR detector noise floor
+        'centering_tolerance': 2.0,  # Modern epoch
+        'label':               'VISTA VHS DR5',
+    },
+    'UKIDSS': {
+        'bands':               ['K', 'H', 'J'],
+        'hips_base':           'CDS/P/UKIDSS/DR11/LAS/', 
+        'pixscale':            0.40,
+        'fwhm_arcsec':         2.2,  
+        'detection_sigma':     5.0,  # Standard IR detector noise floor
+        'centering_tolerance': 2.5,  # Older epoch (needs wider PM net)
+        'label':               'UKIDSS LAS',
     },
     'SDSS': {
         'bands':               ['z', 'i', 'r', 'g', 'u'],
@@ -62,7 +89,12 @@ SURVEY_CONFIGS = {
     },
 }
 
-FALLBACK_CHAIN = ['Legacy', 'PanSTARRS', 'SDSS', 'DSS2']
+# Checks best modern optical -> deep southern optical -> high-res IR -> old optical -> old digitized plates
+FALLBACK_CHAIN = ['Legacy', 'PanSTARRS', 'DES', 'VHS', 'UKIDSS', 'SDSS', 'DSS2']
+
+FALLBACK_CHAIN_SLOT1 = ['Legacy', 'PanSTARRS', 'DES', 'VHS', 'UKIDSS', 'SDSS', 'DSS2']
+FALLBACK_CHAIN_SLOT2 = ['PanSTARRS', 'DES', 'VHS', 'UKIDSS', 'SDSS', 'DSS2']
+
 
 # ── 0. The Profile Checker ─────────────────────────────────────────────────────
 
@@ -101,7 +133,7 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
     Finds the true observed center of the target first, then anchors all
     distance calculations relative to that specific object.
     """
-    if not pd.isna(g_mag) and g_mag < 13.0:
+    if not pd.isna(g_mag) and g_mag < 14.0:
         return 1, True
 
     if not np.any(np.isfinite(data)):
@@ -370,9 +402,6 @@ def flag_image_contamination(df, fov_arcsec=30, search_radius_arcsec=9.3, wing_m
     return df
 
 
-FALLBACK_CHAIN_SLOT1 = ['Legacy',  'PanSTARRS', 'SDSS', 'DSS2']
-FALLBACK_CHAIN_SLOT2 = ['PanSTARRS', 'SDSS', 'DSS2']
-
 # ── Fetchers ───────────────────────────────────────────────────────────────────
 
 def fetch_survey_fits(ra, dec, fov_arcsec, survey_name):
@@ -461,7 +490,7 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
 
     To ensure high accuracy, the function implements a magnitude-dependent artifact 
     filtering strategy. It automatically skips detection for heavily saturated bright 
-    stars (G < 13) to avoid "shredding" artifacts, and applies dynamic saddle-point 
+    stars (G < 14) to avoid "shredding" artifacts, and applies dynamic saddle-point 
     deblending (profile checking) to distinguish real faint companions from artificial 
     halo shine on fainter targets.
 
