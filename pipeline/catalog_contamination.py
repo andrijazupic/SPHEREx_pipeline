@@ -239,7 +239,7 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
                             max_retries=3, ignore_psf_contaminants=False, min_snr=9, verbose=False):
     """
     Flags candidates with neighboring sources in Pan-STARRS DR1.
-    Dynamic Red-Fallback: Evaluates y -> z -> i -> r to find the reddest valid magnitude.
+    Dynamic Red-Fallback: Evaluates y -> z -> i -> r -> g to find the reddest valid magnitude.
     """
     tap_service = TAPService("https://tapvizier.u-strasbg.fr/TAPVizieR/tap")
 
@@ -265,7 +265,8 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
         query = f"""
             SELECT objID, RAJ2000 as ra, DEJ2000 as dec, 
                    ymag, e_ymag, yKmag, zmag, e_zmag, zKmag, 
-                   imag, e_imag, iKmag, rmag, e_rmag, rKmag
+                   imag, e_imag, iKmag, rmag, e_rmag, rKmag,
+                   gmag, e_gmag, gKmag
             FROM "II/349/ps1"
             WHERE 1=CONTAINS(POINT('ICRS', RAJ2000, DEJ2000), CIRCLE('ICRS', {ra}, {dec}, {radius_deg}))
         """
@@ -286,7 +287,7 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
                     cone_data['dist_arcsec'] = theoretical_coord.separation(cat_coords).arcsec
                     
                     # ── DYNAMIC RED-FALLBACK LOGIC ──
-                    bands = ['y', 'z', 'i', 'r']
+                    bands = ['y', 'z', 'i', 'r', 'g']
                     for b in bands:
                         e_mag = pd.to_numeric(cone_data[f'e_{b}mag'], errors='coerce').fillna(0)
                         mag = pd.to_numeric(cone_data[f'{b}mag'], errors='coerce').fillna(np.nan)
@@ -387,7 +388,7 @@ def remove_sdss_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.5, mi
                        max_retries=3, ignore_psf_contaminants=False, min_snr=9, verbose=False):
     """
     Flags candidates with neighboring sources in SDSS DR16.
-    Dynamic Red-Fallback: Evaluates z -> i -> r to find the reddest valid magnitude.
+    Dynamic Red-Fallback: Evaluates z -> i -> r -> g -> u to find the reddest valid magnitude.
     """
     tap_service = TAPService("https://tapvizier.u-strasbg.fr/TAPVizieR/tap")
 
@@ -412,7 +413,8 @@ def remove_sdss_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.5, mi
 
         query = f"""
             SELECT objID, RA_ICRS as ra, DE_ICRS as dec, class, 
-                   zmag, e_zmag, imag, e_imag, rmag, e_rmag
+                   zmag, e_zmag, imag, e_imag, rmag, e_rmag,
+                   gmag, e_gmag, umag, e_umag
             FROM "V/154/sdss16"
             WHERE 1=CONTAINS(POINT('ICRS', RA_ICRS, DE_ICRS), CIRCLE('ICRS', {ra}, {dec}, {radius_deg}))
         """
@@ -435,7 +437,7 @@ def remove_sdss_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.5, mi
                     cone_data['type_clean'] = cone_data['class'].map({3: 'Galaxy', 6: 'Star'}).fillna('Unknown')
                     
                     # ── DYNAMIC RED-FALLBACK LOGIC ──
-                    bands = ['z', 'i', 'r']
+                    bands = ['z', 'i', 'r', 'g', 'u']
                     for b in bands:
                         e_mag = pd.to_numeric(cone_data[f'e_{b}mag'], errors='coerce').fillna(0)
                         cone_data[f'snr_{b}'] = np.where(e_mag > 0, 1.0857 / e_mag, 0)
