@@ -25,7 +25,8 @@ warnings.filterwarnings('ignore', module='astropy.wcs')
 # ── Survey Registry ────────────────────────────────────────────────────────────
 SURVEY_CONFIGS = {
     'Legacy': {
-        'hips':                None,
+        'bands':               ['z', 'r', 'g'],
+        'hips_base':           None,
         'pixscale':            0.262,
         'fwhm_arcsec':         2.0,
         'detection_sigma':     6.1,
@@ -33,7 +34,8 @@ SURVEY_CONFIGS = {
         'label':               'DESI Legacy DR10',
     },
     'PanSTARRS': {
-        'hips':                'CDS/P/PanSTARRS/DR1/r',
+        'bands':               ['y', 'z', 'i', 'r', 'g'],
+        'hips_base':           'CDS/P/PanSTARRS/DR1/',
         'pixscale':            0.25,
         'fwhm_arcsec':         2.0,
         'detection_sigma':     6.1,
@@ -41,15 +43,17 @@ SURVEY_CONFIGS = {
         'label':               'PanSTARRS DR1',
     },
     'SDSS': {
-        'hips':                'CDS/P/SDSS9/r',
+        'bands':               ['z', 'i', 'r', 'g', 'u'],
+        'hips_base':           'CDS/P/SDSS9/',
         'pixscale':            0.396,
-        'fwhm_arcsec':         2.5,#?
-        'detection_sigma':     5.0,#?
-        'centering_tolerance': 2.5,#?
+        'fwhm_arcsec':         2.5,
+        'detection_sigma':     5.0,
+        'centering_tolerance': 2.5,
         'label':               'SDSS DR9',
     },
     'DSS2': {
-        'hips':                'CDS/P/DSS2/red',
+        'bands':               ['NIR', 'red', 'blue'],
+        'hips_base':           'CDS/P/DSS2/',
         'pixscale':            1.0,
         'fwhm_arcsec':         3.0,
         'detection_sigma':     4.0,
@@ -73,8 +77,11 @@ def is_real_source(data, target_x, target_y, contam_x, contam_y, min_prominence=
     
     profile = ndimage.map_coordinates(data, np.vstack((y_line, x_line)))
     contam_peak = profile[-1]
-    valley_val = np.min(profile[10:-10])
     
+    if contam_peak <= 0:
+        return False
+        
+    valley_val = np.min(profile[10:-10])
     bump_height = contam_peak - valley_val
     
     if bump_height <= 0:
@@ -91,14 +98,18 @@ def is_real_source(data, target_x, target_y, contam_x, contam_y, min_prominence=
 
 def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey_name, search_radius_arcsec, wing_multiplier, g_mag=np.nan):
     """
-    PUBLICATION-GRADE WCS PSF FITTER.
     Finds the true observed center of the target first, then anchors all
     distance calculations relative to that specific object.
     """
+    if not pd.isna(g_mag) and g_mag < 13.0:
+        return 1, True
+
     if not np.any(np.isfinite(data)):
         return 0, False
 
-    mean, median, std = sigma_clipped_stats(data, sigma=3.0)
+    data_clean = np.nan_to_num(data, nan=np.nanmedian(data))
+
+    mean, median, std = sigma_clipped_stats(data_clean, sigma=3.0)
     std = max(std, 0.001) 
     
     wcs = WCS(header).celestial
@@ -111,7 +122,7 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
     centering_tolerance = cfg['centering_tolerance']
 
     # ── DYNAMIC HALO & SENSITIVITY THRESHOLDS ──
-    if not np.isnan(g_mag) and g_mag < 15.0:
+    if not pd.isna(g_mag) and g_mag < 15.0:
         # ZONE 2: Bright Stars.
         prominence_thresh = 0.15
         halo_check_radius = 7.0
@@ -124,11 +135,10 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
 
     # ── IMAGE HEALING ──
     if do_heal_debounce:
-        det_data = np.nan_to_num(data, nan=0.0)
-        det_data = ndimage.grey_closing(det_data, size=(9, 9))
+        det_data = ndimage.grey_closing(data_clean, size=(9, 9))
         det_data = ndimage.gaussian_filter(det_data, sigma=1.0)
     else:
-        det_data = data
+        det_data = data_clean
 
     # ── SHAPE FILTERED DETECTION ──
     daofind = DAOStarFinder(
@@ -201,7 +211,7 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
             actual_target_x = x_positions[target_index]
             actual_target_y = y_positions[target_index]
             # Pass original data (minus median) for the raw profile check
-            if not is_real_source(data - median, actual_target_x, actual_target_y, cx, cy, min_prominence=prominence_thresh):
+            if not is_real_source(data_clean - median, actual_target_x, actual_target_y, cx, cy, min_prominence=prominence_thresh):
                 continue # Skip this source, it's just halo shine!
         # -------------------------
 
@@ -223,46 +233,61 @@ def count_sources_in_image(data, header, theoretical_ra, theoretical_dec, survey
 def get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier, g_mag=np.nan):
     """
     Downloads FITS and validates the central source using the Fallback Chain.
+    Implements Dynamic Red-Fallback for missing survey coverage.
     """
     for survey_name in FALLBACK_CHAIN:
         cfg = SURVEY_CONFIGS[survey_name]
         pixscale = cfg['pixscale']
         size = max(15, int(np.ceil(fov_arcsec / pixscale)))
         
-        try:
-            if survey_name == 'Legacy':
-                url = (
-                    f"https://www.legacysurvey.org/viewer/fits-cutout?"
-                    f"ra={ra}&dec={dec}&size={size}&layer=ls-dr10"
-                    f"&pixscale={pixscale}&bands=r"
-                )
-            else:
-                hips = requests.utils.quote(cfg['hips'], safe='/')
-                fov_deg = fov_arcsec / 3600.0
-                url = (
-                    f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
-                    f"hips={hips}&width={size}&height={size}"
-                    f"&fov={fov_deg}&projection=TAN&coordsys=icrs"
-                    f"&ra={ra}&dec={dec}&format=fits"
-                )
+        for band in cfg['bands']:
+            try:
+                if survey_name == 'Legacy':
+                    url = (
+                        f"https://www.legacysurvey.org/viewer/fits-cutout?"
+                        f"ra={ra}&dec={dec}&size={size}&layer=ls-dr10"
+                        f"&pixscale={pixscale}&bands={band}"
+                    )
+                else:
+                    hips = requests.utils.quote(f"{cfg['hips_base']}{band}", safe='/')
+                    fov_deg = fov_arcsec / 3600.0
+                    url = (
+                        f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
+                        f"hips={hips}&width={size}&height={size}"
+                        f"&fov={fov_deg}&projection=TAN&coordsys=icrs"
+                        f"&ra={ra}&dec={dec}&format=fits"
+                    )
 
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                hdul = fits.open(BytesIO(resp.content))
-                data = np.squeeze(hdul[0].data)
-                header = hdul[0].header
-                
-                if data is not None and data.size > 0 and np.any(np.isfinite(data)):
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    hdul = fits.open(BytesIO(resp.content))
+                    data = np.squeeze(hdul[0].data)
+                    header = hdul[0].header
+                    
+                    # --- STRICT PRE-FLIGHT VALIDATION ---
+                    # Reject if data is missing, completely flat, or mostly NaNs/Zeros
+                    if data is None or data.size == 0:
+                        continue
+                    
+                    # Count valid (non-NaN, non-zero) pixels
+                    valid_pixels = np.isfinite(data) & (data != 0.0)
+                    if np.sum(valid_pixels) < (0.05 * data.size) or np.ptp(data[valid_pixels]) == 0:
+                        continue # Reject empty footprints masquerading as valid FITS
+                    # ------------------------------------
+
+                    header['BANDUSED'] = band 
+                    
                     num_opt, found = count_sources_in_image(
                         data, header, ra, dec, survey_name, search_radius_arcsec, wing_multiplier, g_mag
                     )
                     
                     if found or survey_name == FALLBACK_CHAIN[-1]:
-                         return data, header, survey_name
-        except Exception:
-            pass
+                         return data, header, survey_name, num_opt, found
+                         
+            except Exception:
+                pass # If it fails, silently move to the next bluest band
 
-    return None, None, 'Failed'
+    return None, None, 'Failed', 0, False
 
 
 # ── 3. The Main Dataframe Iterator ─────────────────────────────────────────────
@@ -295,40 +320,36 @@ def flag_image_contamination(df, fov_arcsec=30, search_radius_arcsec=9.3, wing_m
             except Exception:
                 pass
         
-        # Pass the g_mag to the FITS fetcher (which passes it to the counter)
-        data_opt, head_opt, survey_opt = get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier, g_mag)
+        # Pass the g_mag to the FITS fetcher
+        data_opt, head_opt, survey_opt, num_opt, found_center = get_optical_fits(ra, dec, fov_arcsec, search_radius_arcsec, wing_multiplier, g_mag)
         
         if data_opt is not None:
-            # We also pass the g_mag directly into the counter here
-            num_opt, found_center = count_sources_in_image(
-                data_opt, head_opt, ra, dec, survey_opt, search_radius_arcsec, wing_multiplier, g_mag
-            )
+            # Extract the band from the header for nice logging
+            band = head_opt.get('BANDUSED', '')
+            band_str = f" ({band}-band)" if band else ""
+            survey_label = f"{survey_opt}{band_str}"
 
             if not found_center:
                 if num_opt <= 1:
                     is_contaminated.append(False)
-                    msg = f"⚠️ Source {sid}: Target missing from center in {survey_opt}, {num_opt} other source(s) found. Kept as clean."
-                    if verbose:
-                        print(f"[{i}/{total_sources}] {msg}")
+                    msg = f"⚠️ Source {sid}: Target missing from center in {survey_label}, {num_opt} other source(s) found. Kept as clean."
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
                     notes.append(msg)
                 else:
                     is_contaminated.append(True)
-                    msg = f"🔴 Source {sid}: Target missing from center in {survey_opt}, {num_opt} other source(s) found."
-                    if verbose:
-                        print(f"[{i}/{total_sources}] {msg}")
+                    msg = f"🔴 Source {sid}: Target missing from center in {survey_label}, {num_opt} other source(s) found."
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
                     notes.append(msg)
             else:
                 if num_opt==1:
                     is_contaminated.append(False)
-                    msg = f"🟢 Source {sid}: Clean isolated target in {survey_opt}"
-                    if verbose:
-                        print(f"[{i}/{total_sources}] {msg}")
+                    msg = f"🟢 Source {sid}: Clean isolated target in {survey_label}"
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
                     notes.append(msg)
                 else:
                     is_contaminated.append(True)
-                    msg = f"🔴 Source {sid}: {num_opt-1} contaminants found in {survey_opt}"
-                    if verbose:
-                        print(f"[{i}/{total_sources}] {msg}")
+                    msg = f"🔴 Source {sid}: {num_opt-1} contaminants found in {survey_label}"
+                    if verbose: print(f"[{i}/{total_sources}] {msg}")
                     notes.append(msg)
         else:
             is_contaminated.append(False)
@@ -355,7 +376,7 @@ FALLBACK_CHAIN_SLOT2 = ['PanSTARRS', 'SDSS', 'DSS2']
 # ── Fetchers ───────────────────────────────────────────────────────────────────
 
 def fetch_survey_fits(ra, dec, fov_arcsec, survey_name):
-    """Downloads FITS cutout. Legacy uses bespoke API, others use HiPS2FITS."""
+    """Downloads FITS cutout using Dynamic Red-Fallback and NaN-safe validation."""
     cfg = SURVEY_CONFIGS.get(survey_name)
     if cfg is None:
         return None, None, None
@@ -363,42 +384,53 @@ def fetch_survey_fits(ra, dec, fov_arcsec, survey_name):
     pixscale = cfg['pixscale']
     size     = max(20, int(np.ceil(fov_arcsec / pixscale)))
 
-    try:
-        if survey_name == 'Legacy':
-            url = (
-                f"https://www.legacysurvey.org/viewer/fits-cutout?"
-                f"ra={ra}&dec={dec}&size={size}&layer=ls-dr10"
-                f"&pixscale={pixscale}&bands=r"
-            )
-        else:
-            hips    = requests.utils.quote(cfg['hips'], safe='/')
-            fov_deg = fov_arcsec / 3600.0
-            url = (
-                f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
-                f"hips={hips}&width={size}&height={size}"
-                f"&fov={fov_deg}&projection=TAN&coordsys=icrs"
-                f"&ra={ra}&dec={dec}&format=fits"
-            )
+    for band in cfg['bands']:
+        try:
+            if survey_name == 'Legacy':
+                url = (
+                    f"https://www.legacysurvey.org/viewer/fits-cutout?"
+                    f"ra={ra}&dec={dec}&size={size}&layer=ls-dr10"
+                    f"&pixscale={pixscale}&bands={band}"
+                )
+            else:
+                hips    = requests.utils.quote(f"{cfg['hips_base']}{band}", safe='/')
+                fov_deg = fov_arcsec / 3600.0
+                url = (
+                    f"https://alasky.cds.unistra.fr/hips-image-services/hips2fits?"
+                    f"hips={hips}&width={size}&height={size}"
+                    f"&fov={fov_deg}&projection=TAN&coordsys=icrs"
+                    f"&ra={ra}&dec={dec}&format=fits"
+                )
 
-        resp = requests.get(url, timeout=15)
-        if resp.status_code != 200:
-            return None, None, None
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                hdul = fits.open(BytesIO(resp.content))
+                data = np.squeeze(hdul[0].data)
+                header = hdul[0].header
 
-        hdul = fits.open(BytesIO(resp.content))
-        data = np.squeeze(hdul[0].data)
-        header = hdul[0].header
+                # --- NaN-SAFE VALIDATION ---
+                if data is None or data.size == 0:
+                    continue
+                
+                valid_pixels = np.isfinite(data) & (data != 0.0)
+                if np.sum(valid_pixels) < (0.05 * data.size) or np.ptp(data[valid_pixels]) == 0:
+                    continue # Reject mostly empty or perfectly flat images
+                # ---------------------------
 
-        if data is None or data.size == 0 or not np.any(np.isfinite(data)):
-            return None, None, None
+                header['BANDUSED'] = band # Attach the band to the header for the plotter
+                return data, header, survey_name
 
-        return data, header, survey_name
+        except Exception:
+            pass
 
-    except Exception:
-        return None, None, None
+    return None, None, None
 
 
-def fetch_with_fallback(ra, dec, fov_arcsec, chain, exclude_list=[]):
+def fetch_with_fallback(ra, dec, fov_arcsec, chain, exclude_list=None):
     """Walks the chain, skipping exclusions, returning the first valid image."""
+    if exclude_list is None:
+        exclude_list = []
+        
     for survey_name in chain:
         if survey_name in exclude_list:
             print(f"    Skipping {survey_name} (Already showing in other slot)")
@@ -407,7 +439,8 @@ def fetch_with_fallback(ra, dec, fov_arcsec, chain, exclude_list=[]):
         print(f"    Trying {survey_name} …", end=" ")
         data, header, name = fetch_survey_fits(ra, dec, fov_arcsec, survey_name)
         if data is not None:
-            print("✓")
+            band = header.get('BANDUSED', '')
+            print(f"✓ ({band}-band)")
             return data, header, name
         print("✗ (no data / no coverage)")
     return None, None, None
@@ -455,7 +488,7 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
     print(f"\nFetching images for Source {source_id} (ra={ra:.5f}, dec={dec:.5f})")
     
     # ── 1. Fetch Gaia Magnitude by RA/DEC ──
-    if not g_mag:
+    if g_mag is None or pd.isna(g_mag):
         g_mag = np.nan
         try:
             coord = SkyCoord(ra=ra, dec=dec, unit=(u.degree, u.degree), frame='icrs')
@@ -490,6 +523,10 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
 
         cfg = SURVEY_CONFIGS[survey_name]
         
+        # Extract the dynamically selected band from the FITS header
+        band = header.get('BANDUSED', '')
+        band_str = f" ({band}-band)" if band else ""
+        
         # ── Astrometry ──
         wcs = WCS(header).celestial
         true_pixscale_arcsec = proj_plane_pixel_scales(wcs)[0] * 3600.0
@@ -514,12 +551,20 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
                     bbox=dict(facecolor='white', alpha=0.8, edgecolor='blue'))
         else:
             # ── Standard Detection ──
+            data_clean = np.nan_to_num(data, nan=np.nanmedian(data))
+            
             fwhm_pix = cfg['fwhm_arcsec'] / true_pixscale_arcsec
-            _, median, std = sigma_clipped_stats(data, sigma=3.0)
+            _, median, std = sigma_clipped_stats(data_clean, sigma=3.0)
             std = max(std, 0.001) 
             
             threshold = cfg['detection_sigma'] * std
-            sources = DAOStarFinder(fwhm=fwhm_pix, threshold=threshold)(data - median)
+            daofind = DAOStarFinder(
+                fwhm=fwhm_pix, 
+                threshold=threshold,
+                sharplo=0.4, sharphi=2.0,   
+                roundlo=-1.0, roundhi=1.0   
+            )
+            sources = daofind(data_clean - median)
 
             found_tgt, n_contam, total_sources = False, 0, 0
             
@@ -563,9 +608,9 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
 
                     # --- THE PROFILE CHECK ---
                     # Only check sources inside the dynamic halo radius
-                    if sep < halo_check_radius:
+                    if found_tgt and sep < halo_check_radius:
                         # Pass the dynamic prominence threshold to the function
-                        if not is_real_source(data - median, actual_target_x, actual_target_y, cx, cy, min_prominence=prominence_thresh):
+                        if not is_real_source(data_clean - median, actual_target_x, actual_target_y, cx, cy, min_prominence=prominence_thresh):
                             continue # Skip this source, it's just halo shine!
                     # -------------------------
 
@@ -581,8 +626,24 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
                     ax.add_patch(patches.Circle((cx, cy), wing_pix * wing_multiplier,
                                                 linewidth=2, edgecolor=color, facecolor='none', linestyle=':'))
 
-                info = f"Sources found: {total_sources}\nTarget found: {found_tgt}\nContaminated: {n_contam}"
-                txt_color = 'green' if found_tgt and n_contam == 0 else 'orange'
+                # --- MATCH HEADLESS DECISION LOGIC ---
+                if found_tgt:
+                    if n_contam == 0:
+                        status_text = "Clean"
+                        txt_color = 'green'
+                    else:
+                        status_text = "Contaminated"
+                        txt_color = 'red'
+                else:
+                    if n_contam <= 1:
+                        status_text = "Missing (Kept Clean)"
+                        txt_color = 'orange'
+                    else:
+                        status_text = "Missing & Contaminated"
+                        txt_color = 'red'
+
+                info = f"Sources found: {total_sources}\nTarget found: {found_tgt}\nContaminants: {n_contam}\nStatus: {status_text}"
+                
                 ax.text(0.95, 0.05, info, ha='right', va='bottom', transform=ax.transAxes, 
                         color=txt_color, fontweight='bold', fontsize=10, 
                         bbox=dict(facecolor='white', alpha=0.8, edgecolor=txt_color))
@@ -590,7 +651,7 @@ def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search
                 ax.text(0.95, 0.05, "No Sources Found", ha='right', va='bottom', transform=ax.transAxes,
                         color='red', fontweight='bold', fontsize=10, bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
 
-        ax.set_title(f"{cfg['label']} ({cfg['detection_sigma']}-sigma)\n({true_pixscale_arcsec:.3f}\"/px) | Bounds: {search_radius_arcsec}\" | Wing: {wing_multiplier}", 
+        ax.set_title(f"{cfg['label']}{band_str} ({cfg['detection_sigma']}-sigma)\n({true_pixscale_arcsec:.3f}\"/px) | Bounds: {search_radius_arcsec}\" | Wing: {wing_multiplier}", 
                      fontsize=11, fontweight='bold')
         ax.axis('off')
 

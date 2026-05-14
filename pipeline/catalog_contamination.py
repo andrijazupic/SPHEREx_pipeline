@@ -166,7 +166,8 @@ def remove_desi_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.0, mi
                         dist_col = 'sep_from_target'
                         target_snr, target_band = cone_data.loc[min_idx, 'best_snr'], cone_data.loc[min_idx, 'best_band']
                     else:
-                        contaminants = cone_data.iloc[0:0] 
+                        # [FIXED] Target missing, but check the rest of the field!
+                        contaminants = cone_data[cone_data['dist_arcsec'] <= search_radius_arcsec]
                         dist_col = 'dist_arcsec' 
                     
                     # ── THE FILTERS ──
@@ -294,13 +295,24 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
                         kmag = pd.to_numeric(cone_data[f'{b}Kmag'], errors='coerce').fillna(np.nan)
                         
                         cone_data[f'snr_{b}'] = np.where(e_mag > 0, 1.0857 / e_mag, 0)
-                        cone_data[f'ext_{b}'] = (mag - kmag) > 0.05
+                        
+                        # [FIXED] Safely handle missing Kron magnitudes
+                        cone_data[f'ext_{b}'] = np.where(
+                            np.isfinite(mag) & np.isfinite(kmag),
+                            (mag - kmag) > 0.05,
+                            np.nan 
+                        )
                     
                     conditions = [cone_data[f'snr_{b}'] > 0 for b in bands]
                     cone_data['best_snr'] = np.select(conditions, [cone_data[f'snr_{b}'] for b in bands], default=0)
-                    cone_data['is_extended'] = np.select(conditions, [cone_data[f'ext_{b}'] for b in bands], default=False)
+                    cone_data['is_extended'] = np.select(conditions, [cone_data[f'ext_{b}'] for b in bands], default=np.nan)
                     cone_data['best_band'] = np.select(conditions, bands, default='none')
-                    cone_data['type_clean'] = np.where(cone_data['is_extended'], 'Galaxy', 'Star')
+                    
+                    # Categorize clean types based on the extension flag
+                    cone_data['type_clean'] = np.where(
+                        cone_data['is_extended'] == True, 'Galaxy',
+                        np.where(cone_data['is_extended'] == False, 'Star', 'Unknown')
+                    )
                     
                     # ── NEAREST NEIGHBOR LOGIC ──
                     min_idx = cone_data['dist_arcsec'].idxmin()
@@ -315,12 +327,15 @@ def remove_panstarrs_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.
                         dist_col = 'sep_from_target'
                         target_snr, target_band = cone_data.loc[min_idx, 'best_snr'], cone_data.loc[min_idx, 'best_band']
                     else:
-                        contaminants = cone_data.iloc[0:0] 
+                        # [FIXED] Target missing, but check the rest of the field!
+                        contaminants = cone_data[cone_data['dist_arcsec'] <= search_radius_arcsec]
                         dist_col = 'dist_arcsec'
                     
                     # ── THE FILTERS ──
                     if ignore_psf_contaminants:
-                        contaminants = contaminants[contaminants['type_clean'] == 'Galaxy']
+                        # [FIXED] Filter out known Stars, but cautiously KEEP Galaxies and Unknowns
+                        contaminants = contaminants[contaminants['type_clean'] != 'Star']
+                        
                     contaminants = contaminants[contaminants['best_snr'] >= min_snr]
                     contaminants = contaminants[contaminants[dist_col] >= min_separation_arcsec]
                     n_contaminants = len(contaminants)
@@ -459,12 +474,15 @@ def remove_sdss_blends(df, search_radius_arcsec=9.3, centering_tolerance=2.5, mi
                         dist_col = 'sep_from_target'
                         target_snr, target_band = cone_data.loc[min_idx, 'best_snr'], cone_data.loc[min_idx, 'best_band']
                     else:
-                        contaminants = cone_data.iloc[0:0] 
+                        # [FIXED] Target missing, but check the rest of the field!
+                        contaminants = cone_data[cone_data['dist_arcsec'] <= search_radius_arcsec]
                         dist_col = 'dist_arcsec'
                     
                     # ── THE FILTERS ──
                     if ignore_psf_contaminants:
-                        contaminants = contaminants[contaminants['class'] == 3]
+                        # [FIXED] Safely filter using the mapped string instead of the raw float/int
+                        contaminants = contaminants[contaminants['type_clean'] == 'Galaxy']
+                        
                     contaminants = contaminants[contaminants['best_snr'] >= min_snr]
                     contaminants = contaminants[contaminants[dist_col] >= min_separation_arcsec]
                     n_contaminants = len(contaminants)
