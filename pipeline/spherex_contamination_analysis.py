@@ -6,7 +6,19 @@ from astroquery.gaia import Gaia
 import numpy as np
 import pandas as pd
 
-def spherex_contamination_analysis(df, search_radius_arcsec=9.3, remove_contaminated=True, verbose=False):
+# ── Pipeline Execution Control ────────────────────────────────────────────────
+ACTIVE_PIPELINE_STEPS = [
+    'Gaia',
+    'Legacy',
+    'PanSTARRS',
+    'SDSS',
+    'unWISE',
+    'VHS',
+    'DES',
+    'Image'
+]
+
+def spherex_contamination_analysis(df, target_mission='SPHEREx', search_radius_arcsec=9.3, remove_contaminated=True, verbose=False):
     """
     Executes a multi-survey contamination pipeline for SPHEREx targets.
     
@@ -41,129 +53,146 @@ def spherex_contamination_analysis(df, search_radius_arcsec=9.3, remove_contamin
     """
     
     # 1. Gaia DR3 Synchronous ADQL Check
-    if verbose:
-        print("------------------------------ Gaia DR3 Synchronous ADQL Check ------------------------------")
-    clean_gaia_df = remove_gaia_blends(df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_gaia_df = clean_gaia_df[clean_gaia_df["is_contaminated_gaia"] == False]
+    if 'Gaia' in ACTIVE_PIPELINE_STEPS:
+        if verbose:
+            print("------------------------------ Gaia DR3 Synchronous ADQL Check ------------------------------")
+        clean_gaia_df = remove_gaia_blends(df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+        if remove_contaminated:
+            clean_gaia_df = clean_gaia_df[clean_gaia_df["is_contaminated_gaia"] == False]
+    else:
+        clean_gaia_df = df.copy()
 
     # 2. DESI Legacy DR10 Tractor Catalog Check
-    if verbose:
-        print("\n\n-------------------------- DESI Legacy DR10 Tractor Catalog Check --------------------------")
-    clean_desi_df = remove_desi_blends(clean_gaia_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_desi_df = clean_desi_df[clean_desi_df["is_contaminated_desi"] == False]
+    if 'Legacy' in ACTIVE_PIPELINE_STEPS:
+        if verbose:
+            print("\n\n-------------------------- DESI Legacy DR10 Tractor Catalog Check --------------------------")
+        clean_desi_df = remove_desi_blends(clean_gaia_df, target_mission=target_mission, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+        if remove_contaminated:
+            clean_desi_df = clean_desi_df[clean_desi_df["is_contaminated_desi"] == False]
+    else:
+        clean_desi_df = df.copy()
 
     # 3. Pan-STARRS DR1 VizieR Check
-    if verbose:
-        print("\n\n-------------------------------- Pan-STARRS DR1 VizieR Check --------------------------------")
-    clean_panstarrs_df = remove_panstarrs_blends(clean_desi_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_panstarrs_df = clean_panstarrs_df[clean_panstarrs_df["is_contaminated_panstarrs"] == False]
+    if 'PanSTARRS' in ACTIVE_PIPELINE_STEPS:
+        if verbose:
+            print("\n\n-------------------------------- Pan-STARRS DR1 VizieR Check --------------------------------")
+        clean_panstarrs_df = remove_panstarrs_blends(clean_desi_df, target_mission=target_mission, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+        if remove_contaminated:
+            clean_panstarrs_df = clean_panstarrs_df[clean_panstarrs_df["is_contaminated_panstarrs"] == False]
+    else:
+        clean_panstarrs_df = df.copy()
 
     # 4. SDSS DR16 VizieR Check
-    if verbose:
-        print("\n\n----------------------------------- SDSS DR16 VizieR Check -----------------------------------")
-    clean_sdss_df = remove_sdss_blends(clean_panstarrs_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_sdss_df = clean_sdss_df[clean_sdss_df["is_contaminated_sdss"] == False]
+    if 'SDSS' in ACTIVE_PIPELINE_STEPS:
+        if verbose:
+            print("\n\n----------------------------------- SDSS DR16 VizieR Check -----------------------------------")
+        clean_sdss_df = remove_sdss_blends(clean_panstarrs_df, target_mission=target_mission, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+        if remove_contaminated:
+            clean_sdss_df = clean_sdss_df[clean_sdss_df["is_contaminated_sdss"] == False]
+    else:
+        clean_sdss_df = df.copy()
 
     # 5. unWISE DR1 Mid-Infrared Check
-    if verbose:
-        print("\n\n------------------------------ 5. unWISE Mid-IR Check ------------------------------")
-    clean_unwise_df = remove_unwise_blends(clean_sdss_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_unwise_df = clean_unwise_df[clean_unwise_df["is_contaminated_unwise"] == False]
+    if 'unWISE' in ACTIVE_PIPELINE_STEPS:
+        if verbose:
+            print("\n\n------------------------------------- unWISE Mid-IR Check -------------------------------------")
+        clean_unwise_df = remove_unwise_blends(clean_sdss_df, target_mission=target_mission, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+        if remove_contaminated:
+            clean_unwise_df = clean_unwise_df[clean_unwise_df["is_contaminated_unwise"] == False]
+    else:
+        clean_unwise_df = df.copy()
 
     # 6. VISTA VHS DR5 Near-Infrared Check
-    if verbose:
-        print("\n\n------------------------------- 6. VISTA VHS DR5 Check -------------------------------")
-    clean_vhs_df = remove_vhs_blends(clean_unwise_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_vhs_df = clean_vhs_df[clean_vhs_df["is_contaminated_vhs"] == False]
+    if 'VHS' in ACTIVE_PIPELINE_STEPS:
+        if verbose:
+            print("\n\n------------------------------------- VISTA VHS DR5 Check -------------------------------------")
+        clean_vhs_df = remove_vhs_blends(clean_unwise_df, target_mission=target_mission, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+        if remove_contaminated:
+            clean_vhs_df = clean_vhs_df[clean_vhs_df["is_contaminated_vhs"] == False]
+    else:
+        clean_vhs_df = df.copy()
 
     # 7. Dark Energy Survey (DES) DR2 Check
-    if verbose:
-        print("\n\n-------------------------------- 7. DES DR2 Check --------------------------------")
-    clean_des_df = remove_des_blends(clean_vhs_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_des_df = clean_des_df[clean_des_df["is_contaminated_des"] == False]
-
-    # 8. UKIDSS Large Area Survey (LAS) DR9 check
-    if verbose:
-        print("\n\n-------------------------------- 8. UKIDSS DR9 Check --------------------------------")
-    clean_ukidss_df = remove_ukidss_blends(clean_des_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-    if remove_contaminated:
-        clean_ukidss_df = clean_ukidss_df[clean_ukidss_df["is_contaminated_des"] == False]
-
-    optical_check_df = clean_ukidss_df
-
-    # 9. Direct Optical Image Astrometric/WCS Check
-    if verbose:
-        print("\n\n----------------------------- Optical Image Astrometric/WCS Check -----------------------------")
-        
-    if not optical_check_df.empty:
-        # Helper function to fetch G mag by coordinate
-        def get_g_mag_by_coord(row):
-            import time # Make sure this is imported!
-            
-            # If the dataframe already has it, don't fetch it again!
-            if 'phot_g_mean_mag' in row and not pd.isna(row['phot_g_mean_mag']):
-                return row['phot_g_mean_mag']
-            
-            # Try up to 3 times to handle random server hiccups
-            for attempt in range(3):
-                try:
-                    time.sleep(0.3) # Give the Gaia server a 0.3-second breather
-                    
-                    coord = SkyCoord(ra=row['ra'], dec=row['dec'], unit=(u.degree, u.degree), frame='icrs')
-                    result = Gaia.cone_search_async(coord, radius=u.Quantity(2.0, u.arcsec))
-                    res_df = result.get_results().to_pandas()
-                    
-                    if not res_df.empty:
-                        res_df['dist'] = np.hypot(res_df['ra'] - row['ra'], res_df['dec'] - row['dec'])
-                        best_match = res_df.sort_values('dist').iloc[0]
-                        return best_match['phot_g_mean_mag']
-                    
-                    # If it successfully queried but found nothing, break the retry loop
-                    break 
-                    
-                except Exception:
-                    if attempt == 2:
-                        print(f"⚠️ Gaia API timeout for RA={row['ra']:.4f} after 3 attempts.")
-            return np.nan
-
+    if 'DES' in ACTIVE_PIPELINE_STEPS:
         if verbose:
-            print("Ensuring Gaia G magnitudes are present for saturation cutoff...")
-            
-        # Create a copy to prevent SettingWithCopy warnings
-        working_df = optical_check_df.copy()
-        working_df['phot_g_mean_mag'] = working_df.apply(get_g_mag_by_coord, axis=1)
-        
-        # Split into safe (G >= 14 or NaN fallback) and bright (G < 14)
-        bright_df = working_df[working_df['phot_g_mean_mag'] < 14].copy()
-        to_process_df = working_df[(working_df['phot_g_mean_mag'] >= 14) | (working_df['phot_g_mean_mag'].isna())].copy()
-
-        if verbose:
-            print(f"Skipping image check for {len(bright_df)} bright sources (G < 14).")
-            print(f"Running image check for {len(to_process_df)} sources.")
-
-        # Process the faint sources normally
-        if not to_process_df.empty:
-            processed_df = flag_image_contamination(to_process_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
-        else:
-            processed_df = to_process_df
-            processed_df['is_contaminated_image'] = False # Ensure flag exists
-
-        # Bypass the bright sources (they automatically pass)
-        if not bright_df.empty:
-            bright_df['is_contaminated_image'] = False
-
-        # Recombine the dataframe
-        clean_final_df = pd.concat([processed_df, bright_df], ignore_index=True)
-
+            print("\n\n---------------------------------------- DES DR2 Check ----------------------------------------")
+        clean_des_df = remove_des_blends(clean_vhs_df, target_mission=target_mission, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
         if remove_contaminated:
-            clean_final_df = clean_final_df[clean_final_df["is_contaminated_image"] == False]
+            clean_des_df = clean_des_df[clean_des_df["is_contaminated_des"] == False]
+    else:
+        clean_des_df = df.copy()
+
+    optical_check_df = clean_des_df
+
+    # 8. Direct Optical Image Astrometric/WCS Check
+    if 'Image' in ACTIVE_PIPELINE_STEPS:
+        if verbose:
+            print("\n\n----------------------------- Optical Image Astrometric/WCS Check -----------------------------")
+            
+        if not optical_check_df.empty:
+            # Helper function to fetch G mag by coordinate
+            def get_g_mag_by_coord(row):
+                import time # Make sure this is imported!
+                
+                # If the dataframe already has it, don't fetch it again!
+                if 'phot_g_mean_mag' in row and not pd.isna(row['phot_g_mean_mag']):
+                    return row['phot_g_mean_mag']
+                
+                # Try up to 3 times to handle random server hiccups
+                for attempt in range(3):
+                    try:
+                        time.sleep(0.3) # Give the Gaia server a 0.3-second breather
+                        
+                        coord = SkyCoord(ra=row['ra'], dec=row['dec'], unit=(u.degree, u.degree), frame='icrs')
+                        result = Gaia.cone_search_async(coord, radius=u.Quantity(2.0, u.arcsec))
+                        res_df = result.get_results().to_pandas()
+                        
+                        if not res_df.empty:
+                            res_df['dist'] = np.hypot(res_df['ra'] - row['ra'], res_df['dec'] - row['dec'])
+                            best_match = res_df.sort_values('dist').iloc[0]
+                            return best_match['phot_g_mean_mag']
+                        
+                        # If it successfully queried but found nothing, break the retry loop
+                        break 
+                        
+                    except Exception:
+                        if attempt == 2:
+                            print(f"⚠️ Gaia API timeout for RA={row['ra']:.4f} after 3 attempts.")
+                return np.nan
+
+            if verbose:
+                print("Ensuring Gaia G magnitudes are present for saturation cutoff...")
+                
+            # Create a copy to prevent SettingWithCopy warnings
+            working_df = optical_check_df.copy()
+            working_df['phot_g_mean_mag'] = working_df.apply(get_g_mag_by_coord, axis=1)
+            
+            # Split into safe (G >= 14 or NaN fallback) and bright (G < 14)
+            bright_df = working_df[working_df['phot_g_mean_mag'] < 14].copy()
+            to_process_df = working_df[(working_df['phot_g_mean_mag'] >= 14) | (working_df['phot_g_mean_mag'].isna())].copy()
+
+            if verbose:
+                print(f"Skipping image check for {len(bright_df)} bright sources (G < 14).")
+                print(f"Running image check for {len(to_process_df)} sources.")
+
+            # Process the faint sources normally
+            if not to_process_df.empty:
+                processed_df = flag_image_contamination(to_process_df, search_radius_arcsec=search_radius_arcsec, verbose=verbose)
+            else:
+                processed_df = to_process_df
+                processed_df['is_contaminated_image'] = False # Ensure flag exists
+
+            # Bypass the bright sources (they automatically pass)
+            if not bright_df.empty:
+                bright_df['is_contaminated_image'] = False
+
+            # Recombine the dataframe
+            clean_final_df = pd.concat([processed_df, bright_df], ignore_index=True)
+
+            if remove_contaminated:
+                clean_final_df = clean_final_df[clean_final_df["is_contaminated_image"] == False]
+        else:
+            clean_final_df = optical_check_df.copy()
     else:
         clean_final_df = optical_check_df.copy()
 

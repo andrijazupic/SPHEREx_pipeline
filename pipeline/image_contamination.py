@@ -28,73 +28,63 @@ SURVEY_CONFIGS = {
         'bands':               ['z', 'r', 'g'],
         'hips_base':           None,
         'pixscale':            0.262,
-        'fwhm_arcsec':         2.0,
+        'fwhm_arcsec':         2.5,
         'detection_sigma':     6.1,
         'centering_tolerance': 2.0,
         'label':               'DESI Legacy DR10',
     },
     'PanSTARRS': {
-        'bands':               ['y', 'z', 'i', 'r', 'g'],
+        'bands':               ['z', 'i', 'r', 'y', 'g'],
         'hips_base':           'CDS/P/PanSTARRS/DR1/',
         'pixscale':            0.25,
-        'fwhm_arcsec':         2.0,
-        'detection_sigma':     6.1,
+        'fwhm_arcsec':         2.4,
+        'detection_sigma':     7.0,
         'centering_tolerance': 2.0,
         'label':               'PanSTARRS DR1',
     },
     'DES': {
-        'bands':               ['z', 'i', 'r'],
+        'bands':               ['z', 'i', 'r', 'y', 'g'],
         'hips_base':           'CDS/P/DES-DR2/',
         'pixscale':            0.263,
-        'fwhm_arcsec':         2.0,  # Matched to PanSTARRS/Legacy
-        'detection_sigma':     6.1,  # Deep, clean CCD optics
-        'centering_tolerance': 2.0,  # Modern epoch
+        'fwhm_arcsec':         2.35, 
+        'detection_sigma':     7.0,
+        'centering_tolerance': 2.0,
         'label':               'DES DR2',
     },
     'VHS': {
-        'bands':               ['Ks', 'H', 'J'],
-        'hips_base':           'CDS/P/VISTA/VHS/',
+        'bands':               ['J', 'Y', 'H', 'Ks'],
+        'hips_base':           'wfau.roe.ac.uk/P/VISTA/VHS/',
         'pixscale':            0.34,
-        'fwhm_arcsec':         2.0,  # Matched to modern optical
-        'detection_sigma':     5.0,  # Standard IR detector noise floor
-        'centering_tolerance': 2.0,  # Modern epoch
+        'fwhm_arcsec':         2.35,
+        'detection_sigma':     6.8,
+        'centering_tolerance': 2.0,
         'label':               'VISTA VHS DR5',
     },
-    'UKIDSS': {
-        'bands':               ['K', 'H', 'J'],
-        'hips_base':           'CDS/P/UKIDSS/DR11/LAS/', 
-        'pixscale':            0.40,
-        'fwhm_arcsec':         2.2,  
-        'detection_sigma':     5.0,  # Standard IR detector noise floor
-        'centering_tolerance': 2.5,  # Older epoch (needs wider PM net)
-        'label':               'UKIDSS LAS',
-    },
     'SDSS': {
-        'bands':               ['z', 'i', 'r', 'g', 'u'],
+        'bands':               ['i', 'r', 'z', 'g', 'u'],
         'hips_base':           'CDS/P/SDSS9/',
         'pixscale':            0.396,
         'fwhm_arcsec':         2.5,
-        'detection_sigma':     5.0,
+        'detection_sigma':     6.0,
         'centering_tolerance': 2.5,
         'label':               'SDSS DR9',
     },
     'DSS2': {
-        'bands':               ['NIR', 'red', 'blue'],
+        'bands':               ['red', 'NIR', 'blue'],
         'hips_base':           'CDS/P/DSS2/',
         'pixscale':            1.0,
-        'fwhm_arcsec':         3.0,
-        'detection_sigma':     4.0,
+        'fwhm_arcsec':         6.5,
+        'detection_sigma':     6.8,
         'centering_tolerance': 5.0,
         'label':               'DSS2',
     },
 }
 
 # Checks best modern optical -> deep southern optical -> high-res IR -> old optical -> old digitized plates
-FALLBACK_CHAIN = ['Legacy', 'PanSTARRS', 'DES', 'VHS', 'UKIDSS', 'SDSS', 'DSS2']
+FALLBACK_CHAIN = ['Legacy', 'DES', 'PanSTARRS', 'VHS', 'SDSS', 'DSS2']
 
-FALLBACK_CHAIN_SLOT1 = ['Legacy', 'PanSTARRS', 'DES', 'VHS', 'UKIDSS', 'SDSS', 'DSS2']
-FALLBACK_CHAIN_SLOT2 = ['PanSTARRS', 'DES', 'VHS', 'UKIDSS', 'SDSS', 'DSS2']
-
+FALLBACK_CHAIN_SLOT1 = ['Legacy', 'DES', 'PanSTARRS', 'VHS', 'SDSS', 'DSS2']
+FALLBACK_CHAIN_SLOT2 = ['DES', 'PanSTARRS', 'VHS', 'SDSS', 'DSS2']
 
 # ── 0. The Profile Checker ─────────────────────────────────────────────────────
 
@@ -477,7 +467,7 @@ def fetch_with_fallback(ra, dec, fov_arcsec, chain, exclude_list=None):
 
 # ── Main plotting function ─────────────────────────────────────────────────────
 
-def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=30, search_radius_arcsec=9.3, wing_multiplier=1.0):
+def plot_survey_comparison(source_id, ra, dec, g_mag=None, fov_arcsec=35, search_radius_arcsec=9.3, wing_multiplier=0.8):
     """
     Fetches and plots a side-by-side visual comparison of the target across multiple optical surveys.
     
